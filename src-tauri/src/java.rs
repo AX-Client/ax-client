@@ -383,12 +383,8 @@ async fn install_adoptium(
     std::fs::create_dir_all(&extract_dir)?;
     let tmp2 = tmp.clone();
     let extract2 = extract_dir.clone();
-    tokio::task::spawn_blocking(move || -> crate::error::Result<()> {
-        let file = std::fs::File::open(&tmp2).map_err(|e| Error::Io(e.to_string()))?;
-        let gz = flate2::read::GzDecoder::new(file);
-        let mut ar = tar::Archive::new(gz);
-        ar.unpack(&extract2).map_err(|e| Error::Io(e.to_string()))?;
-        Ok(())
+    tokio::task::spawn_blocking(move || {
+        extract_archive(&tmp2, &extract2).map_err(|e| Error::Io(e.to_string()))
     })
     .await
     .map_err(|e| Error::Io(e.to_string()))??;
@@ -445,6 +441,92 @@ async fn install_adoptium(
     p2.done = 1;
     emit(app, state, &p2);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn test_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ax_java_test_{name}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn extract_targz_archive() {
+        let dir = test_dir("targz");
+        let archive = dir.join("jdk.tar.gz");
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+            let mut tar = tar::Builder::new(enc);
+            let bytes = "hello".as_bytes();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            tar.append_data(&mut header, "jdk-21/bin/java", bytes).unwrap();
+            tar.finish().unwrap();
+        }
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_archive(&archive, &out).unwrap();
+        assert!(out.join("jdk-21/bin/java").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_zip_archive() {
+        let dir = test_dir("zip");
+        let archive = dir.join("jdk.zip");
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("jdk-21/bin/java.exe", opts).unwrap();
+            zip.write_all(b"mz").unwrap();
+            zip.finish().unwrap();
+        }
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_archive(&archive, &out).unwrap();
+        assert!(out.join("jdk-21/bin/java.exe").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_rejects_garbage() {
+        let dir = test_dir("garbage");
+        let archive = dir.join("jdk.bin");
+        std::fs::write(&archive, b"not an archive").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        assert!(extract_archive(&archive, &out).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Extract an Adoptium Java archive into `extract_dir`. Adoptium serves
+/// .tar.gz on macOS/Linux but .zip on Windows — detect the format from the
+/// magic bytes.
+fn extract_archive(archive: &Path, extract_dir: &Path) -> crate::error::Result<()> {
+    let bytes = std::fs::read(archive).map_err(|e| Error::Io(e.to_string()))?;
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
+        let mut ar = tar::Archive::new(gz);
+        ar.unpack(extract_dir).map_err(|e| Error::Io(e.to_string()))?;
+        Ok(())
+    } else if bytes.starts_with(b"PK") {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+            .map_err(|e| Error::Io(e.to_string()))?;
+        zip.extract(extract_dir).map_err(|e| Error::Io(e.to_string()))?;
+        Ok(())
+    } else {
+        Err(Error::Launch("unrecognized Java archive format".into()))
+    }
 }
 
 /// List installed managed runtimes plus system java.

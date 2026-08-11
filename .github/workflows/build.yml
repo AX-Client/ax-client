@@ -2,11 +2,11 @@ name: Build
 
 on:
   push:
-    tags: ["v*"]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -16,12 +16,16 @@ jobs:
         include:
           - platform: macos-latest
             args: --target aarch64-apple-darwin
+            artifact: ax-client-macos-arm64
           - platform: macos-latest
             args: --target x86_64-apple-darwin
+            artifact: ax-client-macos-x64
           - platform: ubuntu-22.04
             args: ""
+            artifact: ax-client-linux
           - platform: windows-latest
             args: ""
+            artifact: ax-client-windows
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -61,13 +65,11 @@ jobs:
           AX_AFFILIATE_URL: ${{ secrets.AX_AFFILIATE_URL }}
 
       - name: Build launcher
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: "AX Client v__VERSION__"
-          releaseBody: "Automatischer CI-Build: macOS (Intel + Apple Silicon), Windows, Linux"
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
+          name: ${{ matrix.artifact }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error

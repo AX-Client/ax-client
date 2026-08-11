@@ -44,6 +44,18 @@ jobs:
       - name: Frontend dependencies
         run: npm ci
 
+      - name: Write backend env
+        run: |
+          if [ -n "$AX_BACKEND_URL" ]; then
+            echo "AX_BACKEND_URL=$AX_BACKEND_URL" >> src-tauri/.env
+            echo "AX_PAYWALL_URL=$AX_PAYWALL_URL" >> src-tauri/.env
+            echo "AX_AFFILIATE_URL=$AX_AFFILIATE_URL" >> src-tauri/.env
+          fi
+        env:
+          AX_BACKEND_URL: ${{ secrets.AX_BACKEND_URL }}
+          AX_PAYWALL_URL: ${{ secrets.AX_PAYWALL_URL }}
+          AX_AFFILIATE_URL: ${{ secrets.AX_AFFILIATE_URL }}
+
       - name: Build launcher
         uses: tauri-apps/tauri-action@v0
         env:

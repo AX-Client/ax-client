@@ -62,6 +62,8 @@ pub struct Account {
     pub last_used: Option<String>,
     #[serde(default)]
     pub picture: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

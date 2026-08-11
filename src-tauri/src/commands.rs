@@ -489,6 +489,7 @@ async fn finalize_ms_login(
         created_at: chrono::Utc::now().to_rfc3339(),
         last_used: Some(chrono::Utc::now().to_rfc3339()),
         picture: None,
+        email: result.email.clone(),
     };
 
     {
@@ -749,6 +750,9 @@ pub async fn refresh_account(state: State<'_, AppState>, id: String) -> CmdResul
                     a.player_name = p.name.clone();
                     a.skins = p.skins.clone();
                     a.last_used = Some(chrono::Utc::now().to_rfc3339());
+                    if let Some(e) = result.email {
+                        a.email = Some(e);
+                    }
                 }
                 let updated = accounts.iter().find(|a| a.id == id).cloned().unwrap_or(uuid);
                 drop(accounts);
@@ -1483,8 +1487,10 @@ pub async fn premium_status(state: State<'_, AppState>) -> CmdResult<crate::mone
     let Some(xuid) = active_xuid(&state) else {
         return Ok(crate::monet::PremiumStatus::free());
     };
-    let name = active_account(&state).map(|a| a.player_name).filter(|n| !n.is_empty());
-    crate::monet::premium_status(&state, &xuid, name.as_deref()).await.map_err(|e| e.to_string())
+    let account = active_account(&state);
+    let name = account.as_ref().map(|a| a.player_name.as_str()).filter(|n| !n.is_empty());
+    let email = account.as_ref().and_then(|a| a.email.as_deref());
+    crate::monet::premium_status(&state, &xuid, name, email).await.map_err(|e| e.to_string())
 }
 
 /// Paywall / affiliate links for the UI (env-driven).
@@ -1508,7 +1514,8 @@ pub async fn cloud_profiles_sync(state: State<'_, AppState>) -> CmdResult<crate:
     let xuid = active_xuid(&state).ok_or_else(|| String::from("no_xuid"))?;
 
     let name = Some(account.player_name.clone());
-    let status = crate::monet::premium_status(&state, &xuid, name.as_deref())
+    let email = account.email.clone();
+    let status = crate::monet::premium_status(&state, &xuid, name.as_deref(), email.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     if !status.is_premium() {
@@ -1529,7 +1536,7 @@ pub async fn cloud_profiles_sync(state: State<'_, AppState>) -> CmdResult<crate:
             .map_err(|e| e.to_string())?;
         return Ok(crate::monet::CloudSyncResult { cloud_stub: true, uploaded: options.len() });
     }
-    crate::monet::cloud_sync(&state, &xuid, name.as_deref(), &payload, rev)
+    crate::monet::cloud_sync(&state, &xuid, name.as_deref(), email.as_deref(), &payload, rev)
         .await
         .map_err(|e| e.to_string())
 }

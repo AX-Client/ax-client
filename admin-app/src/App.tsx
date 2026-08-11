@@ -249,23 +249,28 @@ const TIERS: Array<{ key: string; label: string; tier: string; days: number }> =
 ];
 
 function GrantsTab() {
-  const [xuid, setXuid] = useState("");
+  const [email, setEmail] = useState("");
   const [tierKey, setTierKey] = useState("7d");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const run = async () => {
-    if (!xuid.trim()) {
-      setMsg({ kind: "err", text: "XUID eingeben." });
+    const target = email.trim();
+    if (!target) {
+      setMsg({ kind: "err", text: "E-Mail eingeben." });
+      return;
+    }
+    if (!target.includes("@")) {
+      setMsg({ kind: "err", text: "Das sieht nicht nach einer E-Mail aus (enthält kein @)." });
       return;
     }
     const t = TIERS.find((x) => x.key === tierKey)!;
     setBusy(true);
     setMsg(null);
     try {
-      await grant(xuid.trim(), t.tier, t.days);
+      await grant(target, t.tier, t.days);
       setMsg({ kind: "ok", text: t.key === "0" ? "Abo entzogen." : `Abo für ${t.label} gewährt.` });
-      setXuid("");
+      setEmail("");
     } catch (e) {
       setMsg({ kind: "err", text: String(e) });
     } finally {
@@ -276,8 +281,8 @@ function GrantsTab() {
   return (
     <div className="panel" style={{ maxWidth: 480 }}>
       <h3>Abo vergeben / entziehen</h3>
-      <label>XUID</label>
-      <input value={xuid} onChange={(e) => setXuid(e.target.value)} placeholder="xuid…" className="mono" />
+      <label>E-Mail</label>
+      <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="spieler@example.com" className="mono" />
       <label>Dauer</label>
       <select value={tierKey} onChange={(e) => setTierKey(e.target.value)}>
         {TIERS.map((t) => (

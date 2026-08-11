@@ -56,8 +56,8 @@ pub async fn admin_stats() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn admin_grant(xuid: String, tier: String, days: i64) -> Result<Value, String> {
-    admin_call("POST", "/admin-grant", Some(json!({ "xuid": xuid, "tier": tier, "days": days }))).await
+pub async fn admin_grant(email: String, tier: String, days: i64) -> Result<Value, String> {
+    admin_call("POST", "/admin-grant", Some(json!({ "email": email, "tier": tier, "days": days }))).await
 }
 
 #[tauri::command]

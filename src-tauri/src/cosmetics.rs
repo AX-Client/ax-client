@@ -50,7 +50,7 @@ pub async fn ensure_installed(
 
     // 3) session sidecar - token goes through the keychain-backed vault flow,
     //    never written in plain text by hand
-    let token = match monet::session_token(state, &xuid, None).await {
+    let token = match monet::session_token(state, &xuid, None, None).await {
         Ok(t) => t,
         Err(e) => {
             log::warn!("cosmetics: no session token, mod stays dormant: {e}");

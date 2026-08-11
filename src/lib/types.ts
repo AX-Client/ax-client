@@ -28,6 +28,7 @@ export interface Account {
   createdAt: string;
   lastUsed?: string | null;
   picture?: string | null;
+  email?: string | null;
 }
 
 export interface SkinInfo {

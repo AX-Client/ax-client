@@ -9,7 +9,7 @@ export const handler = async (req: Request): Promise<Response> => {
   if (!adminOk(req)) return json(401, { error: "invalid admin secret" });
 
   const [usersRes, sessionsRes, newsRes] = await Promise.all([
-    rest("GET", "/ax_users?select=xuid,tier,player_name,last_seen&limit=100000"),
+    rest("GET", "/ax_users?select=xuid,tier,player_name,email,last_seen&limit=100000"),
     rest("GET", "/ax_sessions?select=xuid,expires_at&limit=100000"),
     rest("GET", "/ax_news?select=title&limit=1"),
   ]);
@@ -29,7 +29,7 @@ export const handler = async (req: Request): Promise<Response> => {
 
   const onlineUsers = [...active].map((xuid) => {
     const u = byXuid.get(xuid);
-    return { xuid, player_name: u?.player_name ?? null };
+    return { xuid, player_name: u?.player_name ?? null, email: u?.email ?? null };
   }).sort((a, b) => String(a.player_name ?? "").localeCompare(String(b.player_name ?? "")));
 
   return json(200, {

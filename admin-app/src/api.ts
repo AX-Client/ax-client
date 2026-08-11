@@ -18,8 +18,8 @@ export interface NewsItem {
 }
 
 export const stats = (): Promise<Stats> => invoke("admin_stats");
-export const grant = (xuid: string, tier: string, days: number): Promise<{ ok: boolean }> =>
-  invoke("admin_grant", { xuid, tier, days });
+export const grant = (email: string, tier: string, days: number): Promise<{ ok: boolean }> =>
+  invoke("admin_grant", { email, tier, days });
 export const newsList = (): Promise<NewsItem[]> => invoke("admin_news_list");
 export const newsPost = (title: string, body: string, link: string): Promise<{ ok: boolean }> =>
   invoke("admin_news_post", { title, body, link });

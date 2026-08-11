@@ -3,7 +3,8 @@
 //   deno test --allow-net --allow-env supabase/functions/_shared/e2e_test.ts
 import { assert, assertEquals } from "jsr:@std/assert";
 
-type UsersRow = { xuid: string; tier: string; expires_at?: string };
+type UsersRow = { xuid: string; tier: string; expires_at?: string; email?: string };
+
 type SessionRow = { token_hash: string; refresh_token_hash: string; xuid: string; expires_at: string };
 type CloudRow = { xuid: string; profile_key: string; payload: unknown; rev: number };
 type NewsRow = { id: string; title: string; body: string; link: string; created_at: string };
@@ -209,7 +210,7 @@ Deno.test("admin: stats, grant, news + rss", async () => {
     // identify a user with a name (fresh session -> online)
     const idRes = await call(identify, new Request("http://x/auth-identify", {
       method: "POST",
-      body: JSON.stringify({ xuid: "2535461012345678", player_name: "Felix" }),
+      body: JSON.stringify({ xuid: "2535461012345678", player_name: "Felix", email: "Felix@Example.com" }),
     }));
     const idBody = await idRes.json();
 
@@ -228,6 +229,7 @@ Deno.test("admin: stats, grant, news + rss", async () => {
     assertEquals(st.users_total, 1);
     assertEquals(st.online_count, 1);
     assertEquals(st.online_users[0].player_name, "Felix");
+    assertEquals(st.online_users[0].email, "felix@example.com");
 
     // grant premium for 30 days
     const grant = await call(adminGrant, new Request("http://x/admin-grant", {
@@ -242,6 +244,24 @@ Deno.test("admin: stats, grant, news + rss", async () => {
       headers: { Authorization: `Bearer ${idBody.session_token}` },
     }));
     assertEquals((await prem.json()).tier, "premium");
+
+    // grant premium by email (case-insensitive) -> same user
+    const grantByEmail = await call(adminGrant, new Request("http://x/admin-grant", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ADMIN}` },
+      body: JSON.stringify({ email: "FELIX@example.com", tier: "premium", days: 60 }),
+    }));
+    assertEquals(grantByEmail.status, 200);
+    const grantBody = await grantByEmail.json();
+    assertEquals(grantBody.xuid, "2535461012345678");
+
+    // unknown email -> 404
+    const grantMiss = await call(adminGrant, new Request("http://x/admin-grant", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ADMIN}` },
+      body: JSON.stringify({ email: "nobody@example.com", tier: "premium", days: 30 }),
+    }));
+    assertEquals(grantMiss.status, 404);
 
     // stats reflects premium_count
     const st2 = await (await call(adminStats, new Request("http://x/admin-stats", {

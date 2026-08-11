@@ -12,7 +12,7 @@ const MS_LIVE_REDIRECT: &str = "https://login.live.com/oauth20_desktop.srf";
 /// Official Minecraft Java (Win32) client. Works without an own Azure app
 /// through the legacy `login.live.com` flows (device code and authorize).
 const DEFAULT_MS_CLIENT_ID: &str = "00000000402b5328";
-const DEFAULT_MS_SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
+const DEFAULT_MS_SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL openid email profile";
 const XBL_AUTH: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_LOGIN: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
@@ -23,6 +23,8 @@ pub struct MsToken {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_in: u64,
+    #[serde(default)]
+    pub id_token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -52,6 +54,7 @@ pub struct LoginResult {
     pub xsts: Option<XstsResp>,
     pub mc: Option<MineToken>,
     pub profile: Option<McProfileResp>,
+    pub email: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -70,6 +73,7 @@ struct TokenResp {
     access_token: Option<String>,
     refresh_token: Option<String>,
     expires_in: Option<u64>,
+    id_token: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
 }
@@ -194,6 +198,7 @@ impl AuthClient {
                 .refresh_token
                 .ok_or_else(|| Error::Auth("missing refresh token".into()))?,
             expires_in: json.expires_in.unwrap_or(3600),
+            id_token: json.id_token.clone(),
         })
     }
 
@@ -223,6 +228,7 @@ impl AuthClient {
                 .refresh_token
                 .unwrap_or_else(|| refresh_token.to_string()),
             expires_in: json.expires_in.unwrap_or(3600),
+            id_token: json.id_token.clone(),
         })
     }
 
@@ -267,6 +273,7 @@ impl AuthClient {
                 .ok_or_else(|| Error::Auth("missing access token".into()))?,
             refresh_token: json.refresh_token.unwrap_or_default(),
             expires_in: json.expires_in.unwrap_or(3600),
+            id_token: json.id_token.clone(),
         })
     }
 
@@ -423,6 +430,7 @@ impl AuthClient {
 
     /// Full login pipeline from an MS access token.
     pub async fn complete_login(&self, ms: MsToken) -> Result<LoginResult> {
+        let email = ms.id_token.as_deref().and_then(email_from_id_token);
         let mut ms_access = ms.access_token;
         let (xbl, _) = match self.xbl_token(&ms_access).await {
             Ok(v) => v,
@@ -444,6 +452,7 @@ impl AuthClient {
             xsts: Some(xsts),
             mc: Some(mc),
             profile: Some(profile),
+            email,
         })
     }
 
@@ -452,6 +461,28 @@ impl AuthClient {
         let ms = self.refresh_ms(ms_refresh).await?;
         self.complete_login(ms).await
     }
+}
+
+/// Extract the `email` claim from a Microsoft id_token (unverified JWT —
+/// used purely as a convenience claim, the account identity stays the XUID).
+pub fn email_from_id_token(id_token: &str) -> Option<String> {
+    fn b64u(seg: &str) -> Option<Vec<u8>> {
+        use base64::Engine;
+        let padded = seg.replace('-', "+").replace('_', "/");
+        let mut s = padded;
+        while s.len() % 4 != 0 {
+            s.push('=');
+        }
+        base64::engine::general_purpose::STANDARD.decode(s).ok()
+    }
+    let payload = id_token.split('.').nth(1)?;
+    let bytes = b64u(payload)?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let email = claims.get("email")?.as_str()?.trim();
+    if email.is_empty() || !email.contains('@') {
+        return None;
+    }
+    Some(email.to_lowercase())
 }
 
 /// UUID form used by Mojang: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
@@ -468,4 +499,23 @@ pub fn dash_uuid(raw: &str) -> String {
 
 pub fn plain_uuid(raw: &str) -> String {
     raw.replace('-', "")
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn id_token_email_extraction() {
+        let header = base64_url(r#"{"alg":"none"}"#);
+        let claims = base64_url(r#"{"email":"Foo@Bar.com","sub":"123"}"#);
+        let token = format!("{header}.{claims}.sig");
+        assert_eq!(email_from_id_token(&token).as_deref(), Some("foo@bar.com"));
+        assert_eq!(email_from_id_token("garbage"), None);
+        assert_eq!(email_from_id_token("a.b.c"), None);
+    }
+
+    fn base64_url(data: &str) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data.as_bytes())
+    }
 }

@@ -11,10 +11,12 @@ export const handler = async (req: Request): Promise<Response> => {
 
   let xuid: string;
   let playerName = "";
+  let email = "";
   try {
     const b = await req.json();
     xuid = String(b.xuid ?? "").trim();
     playerName = String(b.player_name ?? "").trim().slice(0, 32);
+    email = String(b.email ?? "").trim().toLowerCase().slice(0, 254);
   } catch {
     return json(400, { error: "invalid body" });
   }
@@ -23,11 +25,17 @@ export const handler = async (req: Request): Promise<Response> => {
   // ensure the user row exists (tier stays as set by the operator)
   const user = await rest("GET", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}&select=xuid`);
   if (!Array.isArray(user.data) || user.data.length === 0) {
-    await rest("POST", "/ax_users", { xuid, tier: "free", player_name: playerName || null });
-  } else if (playerName) {
-    await rest("PATCH", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}`, { player_name: playerName, last_seen: new Date().toISOString() });
+    await rest("POST", "/ax_users", {
+      xuid,
+      tier: "free",
+      player_name: playerName || null,
+      email: email || null,
+    });
   } else {
-    await rest("PATCH", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}`, { last_seen: new Date().toISOString() });
+    const patch: Record<string, unknown> = { last_seen: new Date().toISOString() };
+    if (playerName) patch.player_name = playerName;
+    if (email) patch.email = email;
+    await rest("PATCH", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}`, patch);
   }
 
   const sessionToken = randomToken();

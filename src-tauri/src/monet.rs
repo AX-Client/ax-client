@@ -136,7 +136,12 @@ const SESSION_REFRESH_KEY: &str = "session_refresh:{xuid}";
 
 /// Returns a valid session token for the user, creating/refreshing it through
 /// the backend when needed. Tokens are stored in the OS-keychain-backed vault.
-pub async fn session_token(state: &AppState, xuid: &str, player_name: Option<&str>) -> Result<String> {
+pub async fn session_token(
+    state: &AppState,
+    xuid: &str,
+    player_name: Option<&str>,
+    email: Option<&str>,
+) -> Result<String> {
     if premium_mock() {
         return Ok(format!("mock-session-{xuid}"));
     }
@@ -185,7 +190,11 @@ pub async fn session_token(state: &AppState, xuid: &str, player_name: Option<&st
         .http
         .post(format!("{base}{}", endpoint_identify()))
         .header("Content-Type", "application/json")
-        .json(&serde_json::json!({ "xuid": xuid, "player_name": player_name.unwrap_or("") }))
+        .json(&serde_json::json!({
+            "xuid": xuid,
+            "player_name": player_name.unwrap_or(""),
+            "email": email.unwrap_or(""),
+        }))
         .send()
         .await
         .map_err(|e| Error::Auth(format!("identify failed: {e}")))?
@@ -211,7 +220,12 @@ fn token_age_ok(_tok: &str) -> bool {
 
 /// Premium entitlement for the given xuid. `fail_closed`: when the backend is
 /// unreachable the user is treated as free (never unlock behind an error).
-pub async fn premium_status(state: &AppState, xuid: &str, player_name: Option<&str>) -> Result<PremiumStatus> {
+pub async fn premium_status(
+    state: &AppState,
+    xuid: &str,
+    player_name: Option<&str>,
+    email: Option<&str>,
+) -> Result<PremiumStatus> {
     if premium_mock() {
         return Ok(PremiumStatus {
             tier: "premium".into(),
@@ -222,7 +236,7 @@ pub async fn premium_status(state: &AppState, xuid: &str, player_name: Option<&s
     if base.is_empty() {
         return Ok(PremiumStatus::free());
     }
-    let tok = session_token(state, xuid, player_name).await?;
+    let tok = session_token(state, xuid, player_name, email).await?;
     let resp = state
         .http
         .get(format!("{base}{}", endpoint_status()))
@@ -246,6 +260,7 @@ pub async fn cloud_sync(
     state: &AppState,
     xuid: &str,
     player_name: Option<&str>,
+    email: Option<&str>,
     options: &serde_json::Value,
     rev: i64,
 ) -> Result<CloudSyncResult> {
@@ -256,7 +271,7 @@ pub async fn cloud_sync(
     if base.is_empty() {
         return Err(Error::Auth("no backend configured (AX_BACKEND_URL)".into()));
     }
-    let tok = session_token(state, xuid, player_name).await?;
+    let tok = session_token(state, xuid, player_name, email).await?;
     let resp = state
         .http
         .post(format!("{base}{}", endpoint_cloud()))

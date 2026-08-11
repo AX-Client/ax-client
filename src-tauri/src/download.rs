@@ -286,6 +286,10 @@ pub async fn download_one(
         attempts += 1;
         match try_download(http, spec, &part, token, on_progress, deadline).await {
             Ok(true) => {
+                // Windows refuses rename when the destination exists; remove
+                // a stale/corrupt file first (size-checked earlier, so this
+                // only happens when it did not match).
+                let _ = std::fs::remove_file(&spec.dest);
                 std::fs::rename(&part, &spec.dest)?;
                 return Ok(());
             }
@@ -342,72 +346,93 @@ async fn try_download(
         if token.is_cancelled() {
             return Err(Error::Canceled);
         }
-        let existing = if i == 0 {
-            std::fs::metadata(part).map(|m| m.len()).unwrap_or(0)
-        } else {
-            0
-        };
         if i > 0 {
             let _ = std::fs::remove_file(part);
         }
-        let mut req = http.get(url);
-        if existing > 0 {
-            req = req.header(reqwest::header::RANGE, format!("bytes={existing}-"));
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        let known_total = resp.content_length();
-        if status == reqwest::StatusCode::PARTIAL_CONTENT {
-            // resume from .part
-        } else if status.is_success() {
-            if existing > 0 {
-                // server ignored Range (200) → restart from scratch
+        // Two passes per URL: first resume the `.part` with a Range request;
+        // if the server rejects the range (416) or the file turns out to be
+        // complete already, retry from scratch on the same URL.
+        for pass in 0..2 {
+            let existing = if pass == 0 {
+                std::fs::metadata(part).map(|m| m.len()).unwrap_or(0)
+            } else {
+                0
+            };
+            if pass > 0 {
                 let _ = std::fs::remove_file(part);
             }
-        } else {
-            // try the next mirror (or fail after the last one)
-            if i + 1 < candidates.len() {
+            let mut req = http.get(url);
+            if existing > 0 {
+                req = req.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+            }
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    if pass == 0 {
+                        continue;
+                    }
+                    return Err(Error::Http(e.to_string()));
+                }
+            };
+            let status = resp.status();
+            if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && pass == 0 {
+                let _ = std::fs::remove_file(part);
                 continue;
             }
-            return Err(Error::Http(format!("{url} -> HTTP {status}")));
-        }
-        let append = existing > 0 && status != reqwest::StatusCode::OK;
-        let mut out = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(append)
-            .truncate(!append)
-            .open(part)
-            .await?;
-        let mut hasher = Sha1::new();
-        let stream = resp.bytes_stream();
-        tokio::pin!(stream);
-        loop {
-            if std::time::Instant::now() >= deadline {
-                return Err(Error::Http(format!("{url} -> attempt deadline exceeded")));
-            }
-            let next = tokio::time::timeout(std::time::Duration::from_secs(60), stream.next())
-                .await;
-            match next {
-                Ok(Some(chunk)) => {
-                    token.is_cancelled();
-                    let chunk = chunk.map_err(|e| Error::Http(e.to_string()))?;
-                    out.write_all(&chunk).await?;
-                    hasher.update(&chunk);
-                    on_progress(chunk.len() as u64, known_total);
+            let known_total = resp.content_length();
+            let append = if status == reqwest::StatusCode::PARTIAL_CONTENT {
+                existing > 0
+            } else if status.is_success() {
+                false
+            } else if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                continue;
+            } else {
+                if pass == 0 {
+                    let _ = std::fs::remove_file(part);
+                    continue;
                 }
-                Ok(None) => break,
-                Err(_) => {
-                    return Err(Error::Http(format!("{url} -> no data for 60s")));
+                if i + 1 < candidates.len() {
+                    break;
+                }
+                return Err(Error::Http(format!("{url} -> HTTP {status}")));
+            };
+            let mut out = tokio::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(append)
+                .truncate(!append)
+                .open(part)
+                .await?;
+            let mut hasher = Sha1::new();
+            let stream = resp.bytes_stream();
+            tokio::pin!(stream);
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return Err(Error::Http(format!("{url} -> attempt deadline exceeded")));
+                }
+                let next = tokio::time::timeout(std::time::Duration::from_secs(60), stream.next())
+                    .await;
+                match next {
+                    Ok(Some(chunk)) => {
+                        token.is_cancelled();
+                        let chunk = chunk.map_err(|e| Error::Http(e.to_string()))?;
+                        out.write_all(&chunk).await?;
+                        hasher.update(&chunk);
+                        on_progress(chunk.len() as u64, known_total);
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        return Err(Error::Http(format!("{url} -> no data for 60s")));
+                    }
                 }
             }
+            out.flush().await?;
+            if let Some(expected) = &spec.sha1 {
+                let got = hex::encode(hasher.finalize());
+                return Ok(&got == expected);
+            }
+            return Ok(true);
         }
-        out.flush().await?;
-        if let Some(expected) = &spec.sha1 {
-            let got = hex::encode(hasher.finalize());
-            return Ok(&got == expected);
-        }
-        return Ok(true);
     }
     unreachable!("mirror_candidates always yields at least one URL")
 }

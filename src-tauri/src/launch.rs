@@ -328,6 +328,15 @@ pub async fn run(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    #[cfg(windows)]
+    {
+        // Without CREATE_NO_WINDOW, Windows may spin up a ConHost console
+        // window next to the game window when stdin is inherited from a
+        // windowed (GUI) parent process.
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+        cmd.stdin(std::process::Stdio::null());
+    }
 
     let mut child = cmd
         .stdout(std::process::Stdio::piped())

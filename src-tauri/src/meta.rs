@@ -367,12 +367,46 @@ pub async fn fetch_json<T: for<'de> Deserialize<'de>>(
     http: &reqwest::Client,
     url: &str,
 ) -> Result<T> {
-    let resp = http.get(url).send().await?;
-    if !resp.status().is_success() {
-        return Err(Error::Http(format!("{url} -> HTTP {}", resp.status())));
+    let mut last: Option<Error> = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(300 * attempt as u64)).await;
+        }
+        let resp = match tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            http.get(url).send(),
+        )
+        .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                last = Some(Error::Http(e.to_string()));
+                continue;
+            }
+            Err(_) => {
+                last = Some(Error::Http(format!("{url} -> timeout")));
+                continue;
+            }
+        };
+        if !resp.status().is_success() {
+            last = Some(Error::Http(format!("{url} -> HTTP {}", resp.status())));
+            continue;
+        }
+        let text = match tokio::time::timeout(std::time::Duration::from_secs(12), resp.text()).await
+        {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                last = Some(Error::Http(e.to_string()));
+                continue;
+            }
+            Err(_) => {
+                last = Some(Error::Http(format!("{url} -> body timeout")));
+                continue;
+            }
+        };
+        return serde_json::from_str(&text).map_err(|e| Error::Json(format!("{url}: {e}")));
     }
-    let text = resp.text().await?;
-    serde_json::from_str(&text).map_err(|e| Error::Json(format!("{url}: {e}")))
+    Err(last.unwrap_or_else(|| Error::Http(format!("{url} -> unreachable"))))
 }
 
 pub async fn fetch_version_manifest(

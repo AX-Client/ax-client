@@ -10,8 +10,11 @@ export const handler = async (req: Request): Promise<Response> => {
   if (req.method !== "POST") return json(405, { error: "method not allowed" });
 
   let xuid: string;
+  let playerName = "";
   try {
-    xuid = String((await req.json()).xuid ?? "").trim();
+    const b = await req.json();
+    xuid = String(b.xuid ?? "").trim();
+    playerName = String(b.player_name ?? "").trim().slice(0, 32);
   } catch {
     return json(400, { error: "invalid body" });
   }
@@ -20,7 +23,11 @@ export const handler = async (req: Request): Promise<Response> => {
   // ensure the user row exists (tier stays as set by the operator)
   const user = await rest("GET", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}&select=xuid`);
   if (!Array.isArray(user.data) || user.data.length === 0) {
-    await rest("POST", "/ax_users", { xuid, tier: "free" });
+    await rest("POST", "/ax_users", { xuid, tier: "free", player_name: playerName || null });
+  } else if (playerName) {
+    await rest("PATCH", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}`, { player_name: playerName, last_seen: new Date().toISOString() });
+  } else {
+    await rest("PATCH", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}`, { last_seen: new Date().toISOString() });
   }
 
   const sessionToken = randomToken();

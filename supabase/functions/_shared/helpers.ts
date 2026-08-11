@@ -56,3 +56,12 @@ export function isoNow(offsetSec: number): string {
 
 export const SESSION_TTL_SEC = 900; // 15 min
 export const REFRESH_TTL_SEC = 30 * 24 * 3600; // 30 days
+
+/// Verifies the Authorization header against the admin secret configured via
+/// `supabase secrets set AX_ADMIN_SECRET=...`. The secret never leaves the
+/// Edge Function environment.
+export function adminOk(req: Request): boolean {
+  const secret = Deno.env.get("AX_ADMIN_SECRET") ?? "";
+  if (!secret) return false;
+  return (req.headers.get("authorization") ?? "") === `Bearer ${secret}`;
+}

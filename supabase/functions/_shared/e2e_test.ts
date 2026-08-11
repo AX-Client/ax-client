@@ -6,10 +6,12 @@ import { assert, assertEquals } from "jsr:@std/assert";
 type UsersRow = { xuid: string; tier: string; expires_at?: string };
 type SessionRow = { token_hash: string; refresh_token_hash: string; xuid: string; expires_at: string };
 type CloudRow = { xuid: string; profile_key: string; payload: unknown; rev: number };
+type NewsRow = { id: string; title: string; body: string; link: string; created_at: string };
 
 const users: UsersRow[] = [];
 const sessions: SessionRow[] = [];
 const cloud: CloudRow[] = [];
+const news: NewsRow[] = [];
 
 const parseQs = (search: string): Record<string, string> => {
   const out: Record<string, string> = {};
@@ -48,6 +50,10 @@ const mockInner = async (req: Request): Promise<Response> => {
     if (table === "ax_users") return json200(filterEq(users as unknown as Record<string, unknown>[], qs));
     if (table === "ax_sessions") return json200(filterEq(sessions as unknown as Record<string, unknown>[], qs));
     if (table === "ax_cloud_profiles") return json200(filterEq(cloud as unknown as Record<string, unknown>[], qs));
+    if (table === "ax_news") {
+      const rows = [...news].sort((a, b) => b.created_at.localeCompare(a.created_at));
+      return json200(rows);
+    }
   }
   if (req.method === "POST") {
     if (table === "ax_users") {
@@ -66,12 +72,30 @@ const mockInner = async (req: Request): Promise<Response> => {
       else cloud.push(body);
       return new Response("", { status: 201 });
     }
+    if (table === "ax_news") {
+      news.push({ id: crypto.randomUUID(), ...body, created_at: new Date().toISOString() });
+      return new Response("", { status: 201 });
+    }
+  }
+  if (req.method === "PATCH") {
+    if (table === "ax_users") {
+      const x = qs["xuid"]?.replace("eq.", "");
+      const u = users.find((row) => row.xuid === x);
+      if (u) Object.assign(u, body);
+      return new Response(null, { status: 204 });
+    }
   }
   if (req.method === "DELETE") {
     if (table === "ax_sessions") {
       const h = qs["token_hash"]?.replace("eq.", "");
       const i = sessions.findIndex((s) => s.token_hash === h);
       if (i >= 0) sessions.splice(i, 1);
+      return new Response(null, { status: 204 });
+    }
+    if (table === "ax_news") {
+      const id = qs["id"]?.replace("eq.", "");
+      const i = news.findIndex((n) => n.id === id);
+      if (i >= 0) news.splice(i, 1);
       return new Response(null, { status: 204 });
     }
   }
@@ -164,5 +188,103 @@ Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () =>
     await server.shutdown();
     Deno.env.delete("SUPABASE_URL");
     Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+  }
+});
+
+const { handler: adminStats } = await import("../admin-stats/index.ts");
+const { handler: adminGrant } = await import("../admin-grant/index.ts");
+const { handler: adminNews } = await import("../admin-news/index.ts");
+const { handler: newsRss } = await import("../news-rss/index.ts");
+
+const ADMIN = "supersecret";
+
+Deno.test("admin: stats, grant, news + rss", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, mockSupabase);
+  const port = server.addr.port;
+  Deno.env.set("SUPABASE_URL", `http://127.0.0.1:${port}`);
+  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+  Deno.env.set("AX_ADMIN_SECRET", ADMIN);
+
+  try {
+    // identify a user with a name (fresh session -> online)
+    const idRes = await call(identify, new Request("http://x/auth-identify", {
+      method: "POST",
+      body: JSON.stringify({ xuid: "2535461012345678", player_name: "Felix" }),
+    }));
+    const idBody = await idRes.json();
+
+    // stats: wrong secret rejected
+    const bad = await call(adminStats, new Request("http://x/admin-stats", {
+      headers: { Authorization: "Bearer nope" },
+    }));
+    assertEquals(bad.status, 401);
+
+    // stats: valid secret -> 1 user, 1 online
+    const stats = await call(adminStats, new Request("http://x/admin-stats", {
+      headers: { Authorization: `Bearer ${ADMIN}` },
+    }));
+    assertEquals(stats.status, 200);
+    let st = await stats.json();
+    assertEquals(st.users_total, 1);
+    assertEquals(st.online_count, 1);
+    assertEquals(st.online_users[0].player_name, "Felix");
+
+    // grant premium for 30 days
+    const grant = await call(adminGrant, new Request("http://x/admin-grant", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ADMIN}` },
+      body: JSON.stringify({ xuid: "2535461012345678", tier: "premium", days: 30 }),
+    }));
+    assertEquals(grant.status, 200);
+
+    // premium status now returns premium
+    const prem = await call(premiumStatus, new Request("http://x/premium-status", {
+      headers: { Authorization: `Bearer ${idBody.session_token}` },
+    }));
+    assertEquals((await prem.json()).tier, "premium");
+
+    // stats reflects premium_count
+    const st2 = await (await call(adminStats, new Request("http://x/admin-stats", {
+      headers: { Authorization: `Bearer ${ADMIN}` },
+    }))).json();
+    assertEquals(st2.premium_count, 1);
+
+    // post news, list them, check RSS
+    const post = await call(adminNews, new Request("http://x/admin-news", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ADMIN}` },
+      body: JSON.stringify({ action: "post", title: "v1.1 released!", body: "Fixes and <b>speed</b>", link: "https://ax-client.com/v1" }),
+    }));
+    assertEquals(post.status, 200);
+
+    const rss = await call(newsRss, new Request("http://x/news-rss"));
+    assertEquals(rss.status, 200);
+    const xml = await rss.text();
+    assert(xml.includes("v1.1 released!"), "rss contains news title");
+    assert(xml.includes("Fixes and &lt;b&gt;speed&lt;/b&gt;"), "rss escapes html");
+
+    const list = await call(adminNews, new Request("http://x/admin-news", {
+      headers: { Authorization: `Bearer ${ADMIN}` },
+    }));
+    const items = await list.json();
+    assertEquals(items.length, 1);
+    assertEquals(items[0].title, "v1.1 released!");
+
+    // delete
+    const del = await call(adminNews, new Request("http://x/admin-news", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ADMIN}` },
+      body: JSON.stringify({ action: "delete", id: items[0].id }),
+    }));
+    assertEquals(del.status, 200);
+    const list2 = await (await call(adminNews, new Request("http://x/admin-news", {
+      headers: { Authorization: `Bearer ${ADMIN}` },
+    }))).json();
+    assertEquals(list2.length, 0);
+  } finally {
+    await server.shutdown();
+    Deno.env.delete("SUPABASE_URL");
+    Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+    Deno.env.delete("AX_ADMIN_SECRET");
   }
 });

@@ -1483,7 +1483,8 @@ pub async fn premium_status(state: State<'_, AppState>) -> CmdResult<crate::mone
     let Some(xuid) = active_xuid(&state) else {
         return Ok(crate::monet::PremiumStatus::free());
     };
-    crate::monet::premium_status(&state, &xuid).await.map_err(|e| e.to_string())
+    let name = active_account(&state).map(|a| a.player_name).filter(|n| !n.is_empty());
+    crate::monet::premium_status(&state, &xuid, name.as_deref()).await.map_err(|e| e.to_string())
 }
 
 /// Paywall / affiliate links for the UI (env-driven).
@@ -1506,7 +1507,8 @@ pub async fn cloud_profiles_sync(state: State<'_, AppState>) -> CmdResult<crate:
     let account = active_account(&state).ok_or_else(|| String::from("no_account"))?;
     let xuid = active_xuid(&state).ok_or_else(|| String::from("no_xuid"))?;
 
-    let status = crate::monet::premium_status(&state, &xuid)
+    let name = Some(account.player_name.clone());
+    let status = crate::monet::premium_status(&state, &xuid, name.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     if !status.is_premium() {
@@ -1527,7 +1529,7 @@ pub async fn cloud_profiles_sync(state: State<'_, AppState>) -> CmdResult<crate:
             .map_err(|e| e.to_string())?;
         return Ok(crate::monet::CloudSyncResult { cloud_stub: true, uploaded: options.len() });
     }
-    crate::monet::cloud_sync(&state, &xuid, &payload, rev)
+    crate::monet::cloud_sync(&state, &xuid, name.as_deref(), &payload, rev)
         .await
         .map_err(|e| e.to_string())
 }

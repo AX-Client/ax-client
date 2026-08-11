@@ -21,6 +21,7 @@ import {
 import { useApp, toast } from "../lib/store";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n";
+import { launchTimeout } from "../lib/install";
 import { cx } from "./ui";
 import type { Account, Profile } from "../lib/types";
 
@@ -89,7 +90,7 @@ export default function Sidebar({ page, onNavigate }: { page: Page; onNavigate: 
       }
       const res = await Promise.race([
         api.launchProfile(last.id),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(t("launcher.launchTimeout"))), 45000)),
+        launchTimeout(last.id, last.installStatus === "installed", t),
       ]);
       if (res === "launched") {
         useApp.getState().setGameRunning(true);

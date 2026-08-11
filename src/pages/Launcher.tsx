@@ -19,6 +19,7 @@ import {
   Server,
 } from "lucide-react";
 import { useApp } from "../lib/store";
+import { launchTimeout } from "../lib/install";
 import { api, fmtDuration, timeAgo } from "../lib/api";
 import { toast } from "../lib/store";
 import type { PlaytimeStats, Profile } from "../lib/types";
@@ -563,9 +564,7 @@ export default function LauncherPage() {
       }
       const res = await Promise.race([
         api.launchProfile(p.id),
-        new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error(t("launcher.launchTimeout"))), p.installStatus !== "installed" ? 120000 : 45000)
-        ),
+        launchTimeout(p.id, p.installStatus === "installed", t),
       ]);
       if (res === "launched") {
         toast(t("common.launching", { name: p.name }));

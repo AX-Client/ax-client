@@ -280,7 +280,9 @@ pub async fn install_managed(app: &AppHandle, state: &AppState, tag: &str) -> Re
         p2.status = "error".into();
         p2.message = e.to_string();
         emit(app, state, &p2);
-        return Err(e);
+        // Mojang's CDN failed — fall back to Adoptium before giving up.
+        let _ = std::fs::remove_dir_all(&dest);
+        return install_adoptium(app, state, tag, e).await;
     }
 
     let bin = dest.join(bin_name());

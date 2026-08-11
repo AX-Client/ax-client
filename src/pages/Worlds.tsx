@@ -15,6 +15,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { useApp } from "../lib/store";
+import { launchTimeout } from "../lib/install";
 import { api, fmtBytes, toast, timeAgo } from "../lib/api";
 import type { CrashReportInfo, ScreenshotInfo, ServerEntry, WorldInfo } from "../lib/types";
 import { Badge, Button, Card, EmptyState, Field, Modal, RefreshButton, SelectInput, SpinnerBlock, TextInput, Toggle, cx } from "../components/ui";
@@ -173,7 +174,7 @@ export default function WorldsPage() {
       }
       const res = await Promise.race([
         api.launchProfileInto(profileId, target),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(t("launcher.launchTimeout"))), 45000)),
+        launchTimeout(profileId, profile?.installStatus === "installed", t),
       ]);
       if (res === "launched") {
         useApp.getState().setGameRunning(true);

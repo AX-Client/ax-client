@@ -1,0 +1,40 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@std/assert@*": "1.0.19",
+    "jsr:@std/internal@^1.0.12": "1.0.14"
+  },
+  "jsr": {
+    "@std/assert@1.0.19": {
+      "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/internal@1.0.14": {
+      "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@tauri-apps/api@^2.4.0",
+        "npm:@tauri-apps/cli@^2.2.5",
+        "npm:@tauri-apps/plugin-dialog@^2.7.2",
+        "npm:@types/react-dom@^18.3.5",
+        "npm:@types/react@^18.3.18",
+        "npm:@vitejs/plugin-react@^4.3.4",
+        "npm:autoprefixer@^10.4.20",
+        "npm:framer-motion@^11.15.0",
+        "npm:lucide-react@0.469",
+        "npm:postcss@^8.4.49",
+        "npm:react-dom@^18.3.1",
+        "npm:react@^18.3.1",
+        "npm:tailwindcss@^3.4.17",
+        "npm:typescript@^5.7.2",
+        "npm:vite@^6.0.7",
+        "npm:zustand@^5.0.3"
+      ]
+    }
+  }
+}

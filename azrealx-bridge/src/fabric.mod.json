@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "azrealx-bridge",
+  "version": "1.0.0",
+  "name": "AzrealX Bridge",
+  "description": "Applies launcher game options live while the game is running (watches azrealx-live-options.json in the game directory).",
+  "authors": ["AzrealX"],
+  "environment": "client",
+  "entrypoints": {
+    "client": ["azrealx.bridge.AzrealXBridge"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0"
+  }
+}

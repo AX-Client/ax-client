@@ -63,5 +63,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: admin-app/src-tauri/target/release/bundle/**
+          path: |
+            admin-app/src-tauri/target/release/bundle/**
+            admin-app/src-tauri/target/*/release/bundle/**
           if-no-files-found: error

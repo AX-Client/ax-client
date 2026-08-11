@@ -45,6 +45,7 @@ jobs:
         run: npm ci
 
       - name: Write backend env
+        shell: bash
         run: |
           if [ -n "$AX_BACKEND_URL" ]; then
             echo "AX_BACKEND_URL=$AX_BACKEND_URL" >> src-tauri/.env

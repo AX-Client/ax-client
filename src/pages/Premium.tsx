@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
-import { Crown, Check, Cloud, Sparkles, Zap, LifeBuoy, Rocket, ExternalLink } from "lucide-react";
+import { Crown, Check, Cloud, CloudUpload, CloudDownload, Globe, Sparkles, Zap, LifeBuoy, Rocket, ExternalLink } from "lucide-react";
 import { api, toast } from "../lib/api";
 import type { PremiumStatus } from "../lib/types";
+import { useApp } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { Button, Card } from "../components/ui";
+import PaywallModal from "../components/PaywallModal";
 
-const FEATURES: Array<{ icon: typeof Cloud; titleKey: string; descKey: string }> = [
-  { icon: Cloud, titleKey: "prem.featCloudTitle", descKey: "prem.featCloud" },
+type Action = { id: string; labelKey: string };
+
+const FEATURES: Array<{ icon: typeof Cloud; titleKey: string; descKey: string; action?: Action }> = [
+  { icon: CloudUpload, titleKey: "prem.featCloudTitle", descKey: "prem.featCloud", action: { id: "sync", labelKey: "prem.actSync" } },
+  { icon: CloudDownload, titleKey: "monet.cloudRestore", descKey: "prem.featCloud", action: { id: "restore", labelKey: "prem.actRestore" } },
+  { icon: Globe, titleKey: "prem.featWorldTitle", descKey: "prem.featWorld", action: { id: "worlds", labelKey: "prem.actWorlds" } },
   { icon: Sparkles, titleKey: "prem.featCosmeticsTitle", descKey: "prem.featCosmetics" },
   { icon: Rocket, titleKey: "prem.featEarlyTitle", descKey: "prem.featEarly" },
   { icon: Zap, titleKey: "prem.featPriorityTitle", descKey: "prem.featPriority" },
@@ -22,6 +28,8 @@ const PLANS = [
 export default function PremiumPage() {
   const t = useT();
   const [status, setStatus] = useState<PremiumStatus | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [paywall, setPaywall] = useState(false);
 
   useEffect(() => {
     api.premiumStatus().then(setStatus).catch(() => setStatus(null));
@@ -38,6 +46,56 @@ export default function PremiumPage() {
   };
 
   const premium = status?.tier === "premium";
+
+  const runSync = async () => {
+    setBusy("sync");
+    try {
+      const res = await api.cloudSync();
+      toast(t(res.cloud_stub ? "monet.cloudStub" : "monet.cloudSynced"));
+    } catch (e) {
+      const m = String(e);
+      toast(m.includes("cloud_sync_game_running") ? t("monet.cloudSyncGameRunning") : m);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runRestore = async () => {
+    if (!confirm(t("monet.cloudRestoreConfirm"))) return;
+    setBusy("restore");
+    try {
+      const res = await api.cloudRestore();
+      if (!res.options) {
+        toast(t("monet.cloudEmpty"));
+        return;
+      }
+      await api.setSettings({ gameOptions: res.options });
+      toast(t(res.cloud_stub ? "monet.cloudStub" : "monet.cloudRestored"));
+    } catch (e) {
+      toast(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runWorlds = async () => {
+    useApp.getState().setPage("worlds");
+    toast(t("prem.goWorldsHint"));
+  };
+
+  const ACTIONS: Record<string, () => Promise<void>> = {
+    sync: runSync,
+    restore: runRestore,
+    worlds: runWorlds,
+  };
+
+  const runAction = (a: Action) => {
+    if (!premium) {
+      setPaywall(true);
+      return;
+    }
+    void ACTIONS[a.id]();
+  };
 
   return (
     <div className="space-y-6">
@@ -77,14 +135,23 @@ export default function PremiumPage() {
               <div className="w-8 h-8 rounded-lg bg-accent/12 border border-accent/20 flex items-center justify-center shrink-0">
                 <f.icon className="w-4 h-4 text-accent" />
               </div>
-              <div>
+              <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-medium text-white/85">{t(f.titleKey)}</div>
                 <div className="text-[12px] text-white/45 mt-0.5">{t(f.descKey)}</div>
               </div>
+              {f.action && (
+                <div className="shrink-0">
+                  <Button size="sm" variant="secondary" loading={busy === f.action.id} onClick={() => runAction(f.action!)}>
+                    {t(f.action.labelKey)}
+                  </Button>
+                </div>
+              )}
             </div>
           ))}
         </div>
       </Card>
+
+      {paywall && <PaywallModal onClose={() => setPaywall(false)} />}
 
       <div className="grid sm:grid-cols-3 gap-4">
         {PLANS.map((p) => (

@@ -27,7 +27,7 @@ export const handler = async (req: Request): Promise<Response> => {
     return json(400, { error: "invalid body" });
   }
   if (!xuid && !email) return json(400, { error: "missing xuid or email" });
-  if (!["free", "premium"].includes(tier)) return json(400, { error: "invalid tier" });
+  if (!["free", "premium", "lifetime"].includes(tier)) return json(400, { error: "invalid tier" });
 
   if (!xuid) {
     const rows = await rest(
@@ -39,11 +39,13 @@ export const handler = async (req: Request): Promise<Response> => {
     xuid = String(found.xuid);
   }
 
+  const premium = tier === "premium" || tier === "lifetime";
   const expiresAt = tier === "premium"
     ? new Date(Date.now() + Math.max(1, days) * 86400_000).toISOString()
     : null;
+  const storedTier = premium ? "premium" : "free";
 
-  await rest("PATCH", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}`, { tier, expires_at: expiresAt });
+  await rest("PATCH", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}`, { tier: storedTier, expires_at: expiresAt });
 
   return json(200, { ok: true, xuid, email, tier, expires_at: expiresAt });
 };

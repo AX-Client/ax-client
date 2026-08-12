@@ -245,6 +245,7 @@ const TIERS: Array<{ key: string; label: string; tier: string; days: number }> =
   { key: "30d", label: "30 Tage", tier: "premium", days: 30 },
   { key: "90d", label: "90 Tage", tier: "premium", days: 90 },
   { key: "365d", label: "1 Jahr", tier: "premium", days: 365 },
+  { key: "lifetime", label: "Lebenslang", tier: "lifetime", days: 0 },
   { key: "0", label: "Entziehen", tier: "free", days: 0 },
 ];
 

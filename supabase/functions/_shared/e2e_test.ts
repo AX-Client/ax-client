@@ -263,6 +263,23 @@ Deno.test("admin: stats, grant, news + rss", async () => {
     }));
     assertEquals(grantMiss.status, 404);
 
+    // grant lifetime -> no expiry
+    const grantLife = await call(adminGrant, new Request("http://x/admin-grant", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ADMIN}` },
+      body: JSON.stringify({ email: "felix@example.com", tier: "lifetime", days: 0 }),
+    }));
+    assertEquals(grantLife.status, 200);
+    const lifeBody = await grantLife.json();
+    assertEquals(lifeBody.expires_at, null);
+
+    const premLife = await call(premiumStatus, new Request("http://x/premium-status", {
+      headers: { Authorization: `Bearer ${idBody.session_token}` },
+    }));
+    const premLifeBody = await premLife.json();
+    assertEquals(premLifeBody.tier, "premium");
+    assertEquals(premLifeBody.expires_at, null);
+
     // stats reflects premium_count
     const st2 = await (await call(adminStats, new Request("http://x/admin-stats", {
       headers: { Authorization: `Bearer ${ADMIN}` },

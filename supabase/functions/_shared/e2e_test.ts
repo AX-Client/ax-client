@@ -110,6 +110,7 @@ const { handler: identify } = await import("../auth-identify/index.ts");
 const { handler: refresh } = await import("../auth-refresh/index.ts");
 const { handler: premiumStatus } = await import("../premium-status/index.ts");
 const { handler: cloudSync } = await import("../cloud-sync/index.ts");
+const { handler: cloudRestore } = await import("../cloud-restore/index.ts");
 
 const call = (handler: (req: Request) => Promise<Response>, req: Request): Promise<Response> => handler(req);
 
@@ -177,6 +178,15 @@ Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () =>
       body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046", rev: 50, options: { renderDistance: "2" } }),
     }));
     assertEquals((await staleRes.json()).uploaded, 0);
+
+    // 7. cloud restore returns the stored profile
+    const restRes = await call(cloudRestore, new Request("http://x/cloud-restore", {
+      headers: { Authorization: `Bearer ${refBody.session_token}` },
+    }));
+    assertEquals(restRes.status, 200);
+    const restBody = await restRes.json();
+    assertEquals(restBody.rev, 100);
+    assertEquals(restBody.options, opts);
 
     // 7. unknown session rejected
     const badRes = await call(cloudSync, new Request("http://x/cloud-sync", {

@@ -25,6 +25,7 @@ import type {
   PremiumStatus,
   MonetConfig,
   CloudSyncResult,
+  CloudRestoreResult,
 } from "./types";
 
 function cmd<T>(name: string, args?: Record<string, unknown>): Promise<T> {
@@ -136,6 +137,7 @@ export const api = {
   premiumStatus: () => cmd<PremiumStatus>("premium_status"),
   monetConfig: () => cmd<MonetConfig>("monet_config"),
   cloudSync: () => cmd<CloudSyncResult>("cloud_profiles_sync"),
+  cloudRestore: () => cmd<CloudRestoreResult>("cloud_profiles_restore"),
 
   // Utility callbacks the renderer uses for non-invoke work.
   async serverStatus(_ip: string): Promise<import("./types").ServerStatus> {

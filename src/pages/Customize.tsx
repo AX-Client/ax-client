@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { SlidersHorizontal, RotateCcw, RefreshCw, CloudUpload } from "lucide-react";
+import { SlidersHorizontal, RotateCcw, RefreshCw, CloudUpload, CloudDownload } from "lucide-react";
 import { useApp } from "../lib/store";
 import { api, toast } from "../lib/api";
 import { Button, Card, SelectInput, Slider, Toggle } from "../components/ui";
@@ -250,6 +250,7 @@ export default function CustomizePage() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [paywall, setPaywall] = useState(false);
 
   const load = async (id: string) => {
@@ -335,6 +336,30 @@ export default function CustomizePage() {
       toast(String(e));
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const cloudRestore = async () => {
+    if (!confirm(t("monet.cloudRestoreConfirm"))) return;
+    setRestoring(true);
+    try {
+      const st = await api.premiumStatus();
+      if (st.tier !== "premium") {
+        setPaywall(true);
+        return;
+      }
+      const res = await api.cloudRestore();
+      if (!res.options) {
+        toast(t("monet.cloudEmpty"));
+        return;
+      }
+      setUi(buildUi(res.options));
+      setDirty(true);
+      toast(t(res.cloud_stub ? "monet.cloudStub" : "monet.cloudRestored"));
+    } catch (e) {
+      toast(String(e));
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -438,6 +463,9 @@ export default function CustomizePage() {
           </Button>
           <Button variant="ghost" onClick={cloudSync} loading={syncing}>
             <CloudUpload className="w-3.5 h-3.5" /> {t("monet.cloudSync")}
+          </Button>
+          <Button variant="ghost" onClick={cloudRestore} loading={restoring}>
+            <CloudDownload className="w-3.5 h-3.5" /> {t("monet.cloudRestore")}
           </Button>
           <Button variant="primary" onClick={save} loading={saving} disabled={!dirty}>
             {t("go.apply")}

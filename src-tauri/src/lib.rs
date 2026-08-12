@@ -113,6 +113,7 @@ pub fn run() -> Result<()> {
             commands::premium_status,
             commands::monet_config,
             commands::cloud_profiles_sync,
+            commands::cloud_profiles_restore,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1574,6 +1574,27 @@ pub async fn cloud_profiles_sync(state: State<'_, AppState>) -> CmdResult<crate:
         .map_err(|e| e.to_string())
 }
 
+/// Pull the cloud backup for the active account and hand it to the UI so the
+/// profile settings can be restored locally. Premium-gated like the sync.
+#[tauri::command]
+pub async fn cloud_profiles_restore(state: State<'_, AppState>) -> CmdResult<crate::monet::CloudRestoreResult> {
+    let account = active_account(&state).ok_or_else(|| String::from("no_account"))?;
+    let xuid = active_xuid(&state).ok_or_else(|| String::from("no_xuid"))?;
+
+    let name = Some(account.player_name.clone());
+    let email = account.email.clone();
+    let status = crate::monet::premium_status(&state, &xuid, name.as_deref(), email.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    if !status.is_premium() {
+        return Err(String::from("premium_required"));
+    }
+
+    crate::monet::cloud_restore(&state, &xuid, name.as_deref(), email.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Open a URL in the OS default browser (required so affiliate/cookie
 /// tracking works - never an in-app webview).
 #[tauri::command]

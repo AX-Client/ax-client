@@ -263,3 +263,9 @@ export interface CloudSyncResult {
   cloud_stub: boolean;
   uploaded: number;
 }
+
+export interface CloudRestoreResult {
+  cloud_stub: boolean;
+  rev: number;
+  options: Record<string, string> | null;
+}

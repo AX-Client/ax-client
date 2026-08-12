@@ -31,6 +31,7 @@ pub const ENV_ENDPOINT_IDENTIFY: &str = "AX_ENDPOINT_IDENTIFY";
 pub const ENV_ENDPOINT_REFRESH: &str = "AX_ENDPOINT_REFRESH";
 pub const ENV_ENDPOINT_STATUS: &str = "AX_ENDPOINT_STATUS";
 pub const ENV_ENDPOINT_CLOUD: &str = "AX_ENDPOINT_CLOUD";
+pub const ENV_ENDPOINT_CLOUD_RESTORE: &str = "AX_ENDPOINT_CLOUD_RESTORE";
 
 pub fn backend_url() -> String {
     std::env::var(ENV_BACKEND_URL)
@@ -57,6 +58,9 @@ fn endpoint_status() -> String {
 }
 fn endpoint_cloud() -> String {
     endpoint(ENV_ENDPOINT_CLOUD, "/cloud-sync")
+}
+fn endpoint_cloud_restore() -> String {
+    endpoint(ENV_ENDPOINT_CLOUD_RESTORE, "/cloud-restore")
 }
 
 pub fn paywall_url() -> String {
@@ -133,6 +137,15 @@ pub fn config() -> MonetConfig {
 pub struct CloudSyncResult {
     pub cloud_stub: bool,
     pub uploaded: usize,
+}
+
+/// Result of a cloud profile restore. `options: None` means no backup exists
+/// yet on the server side.
+#[derive(Serialize, Clone, Debug)]
+pub struct CloudRestoreResult {
+    pub cloud_stub: bool,
+    pub rev: i64,
+    pub options: Option<serde_json::Value>,
 }
 
 const SESSION_KEY: &str = "session:{xuid}";
@@ -337,6 +350,55 @@ pub async fn cloud_sync(
     } else {
         Err(Error::Auth(format!("cloud sync rejected (HTTP {})", resp.status().as_u16())))
     }
+}
+
+/// Fetch the stored cloud profile settings for the given user. Returns
+/// `None` if the backend has no backup yet (HTTP 404) or the local stub file
+/// does not exist.
+pub async fn cloud_restore(
+    state: &AppState,
+    xuid: &str,
+    player_name: Option<&str>,
+    email: Option<&str>,
+) -> Result<CloudRestoreResult> {
+    if premium_mock() || backend_url().is_empty() {
+        let file = state.data_dir.join("cloud").join(format!("{xuid}.json"));
+        if let Ok(txt) = std::fs::read_to_string(&file) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                return Ok(CloudRestoreResult {
+                    cloud_stub: true,
+                    rev: v["rev"].as_i64().unwrap_or(0),
+                    options: Some(v["options"].clone()),
+                });
+            }
+        }
+        return Ok(CloudRestoreResult { cloud_stub: true, rev: 0, options: None });
+    }
+    let base = backend_url();
+    let tok = session_token(state, xuid, player_name, email).await?;
+    let resp = state
+        .http
+        .get(format!("{base}{}", endpoint_cloud_restore()))
+        .bearer_auth(&tok)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| Error::Auth(format!("cloud restore failed: {e}")))?;
+    if resp.status().as_u16() == 404 {
+        return Ok(CloudRestoreResult { cloud_stub: false, rev: 0, options: None });
+    }
+    if !resp.status().is_success() {
+        return Err(Error::Auth(format!("cloud restore rejected (HTTP {})", resp.status().as_u16())));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Auth(format!("cloud restore parse failed: {e}")))?;
+    Ok(CloudRestoreResult {
+        cloud_stub: false,
+        rev: body["rev"].as_i64().unwrap_or(0),
+        options: Some(body["options"].clone()),
+    })
 }
 
 #[cfg(test)]

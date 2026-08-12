@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "dev:all": "npm run tauri dev & npm --prefix admin-app run tauri dev & wait"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.4.0",

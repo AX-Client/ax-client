@@ -503,6 +503,19 @@ async fn finalize_ms_login(
         vault.flush().map_err(|e| e.to_string())?;
     }
 
+    // Register the account with the backend on every sign-in so the operator
+    // sees name/email/online status. Best-effort: a failing identify must not
+    // break the local login. Backend identity is the Minecraft UUID (always
+    // present; the Xbox XUID is not reliably returned by Microsoft).
+    let backend_id = auth::plain_uuid(&account.player_uuid);
+    {
+        let name = Some(account.player_name.as_str());
+        let email = account.email.as_deref();
+        if let Err(e) = crate::monet::identify_account(&state, &backend_id, name, email).await {
+            log::warn!("identify_account failed (ignored): {e}");
+        }
+    }
+
     let mut accounts = state.accounts.lock().unwrap();
     accounts.retain(|a| a.player_uuid != account.player_uuid);
     accounts.push(account.clone());
@@ -716,15 +729,26 @@ pub async fn refresh_all_accounts(state: State<'_, AppState>) -> CmdResult<Vec<A
             .await
         {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                    continue;
+            }
         };
         let Some(p) = result.profile else { continue };
-        let mut accounts = state.accounts.lock().unwrap();
-        if let Some(a) = accounts.iter_mut().find(|a| a.id == id) {
-            a.player_name = p.name.clone();
-            a.skins = p.skins.clone();
-            a.last_used = Some(chrono::Utc::now().to_rfc3339());
-            changed.push(a.clone());
+        {
+            let mut accounts = state.accounts.lock().unwrap();
+            if let Some(a) = accounts.iter_mut().find(|a| a.id == id) {
+                a.player_name = p.name.clone();
+                a.skins = p.skins.clone();
+                a.last_used = Some(chrono::Utc::now().to_rfc3339());
+                changed.push(a.clone());
+            }
+        }
+        // keep the operator-visible account data (name/email/online) in sync on
+        // every launcher start; best-effort so backend hiccups never block the app
+        let backend_id = auth::plain_uuid(&uuid.player_uuid);
+        let email = result.email.as_deref();
+        if let Err(e) = crate::monet::identify_account(&state, &backend_id, Some(&p.name), email).await {
+            log::warn!("identify_account failed (ignored): {e}");
         }
     }
     state.persist_accounts().map_err(|e| e.to_string())?;
@@ -1475,9 +1499,12 @@ fn active_account(state: &State<'_, AppState>) -> Option<crate::model::Account> 
 }
 
 /// Vault-backed xuid of the active account (linked during MS login).
+/// Backend identity of the active account: the Minecraft UUID (plain). The
+/// Xbox XUID is unreliable (Microsoft sometimes omits it), the MC UUID is
+/// always present and unique per account.
 fn active_xuid(state: &State<'_, AppState>) -> Option<String> {
     let account = active_account(state)?;
-    state.vault().get(&format!("{}:xuid", account.player_uuid))
+    Some(auth::plain_uuid(&account.player_uuid))
 }
 
 /// Premium tier of the currently logged-in account. Fails closed: no account,
@@ -1485,11 +1512,17 @@ fn active_xuid(state: &State<'_, AppState>) -> Option<String> {
 #[tauri::command]
 pub async fn premium_status(state: State<'_, AppState>) -> CmdResult<crate::monet::PremiumStatus> {
     let Some(xuid) = active_xuid(&state) else {
-        return Ok(crate::monet::PremiumStatus::free());
+            return Ok(crate::monet::PremiumStatus::free());
     };
     let account = active_account(&state);
     let name = account.as_ref().map(|a| a.player_name.as_str()).filter(|n| !n.is_empty());
     let email = account.as_ref().and_then(|a| a.email.as_deref());
+    // Register/refresh with the backend on every status poll: this is what
+    // keeps the operator's user list (name/email/online) current even when no
+    // MS token refresh happens. Best-effort, never fails the status itself.
+    if let Err(e) = crate::monet::identify_account(&state, &xuid, name, email).await {
+        log::warn!("identify_account failed (ignored): {e}");
+    }
     crate::monet::premium_status(&state, &xuid, name, email).await.map_err(|e| e.to_string())
 }
 

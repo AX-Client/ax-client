@@ -339,7 +339,7 @@ impl AuthClient {
         Ok((token, uhs))
     }
 
-    pub async fn xsts_token(&self, xbl_token: &str) -> Result<XstsResp> {
+    pub async fn xsts_token(&self, xbl_token: &str, xbl_uhs: &str) -> Result<XstsResp> {
         let body = serde_json::json!({
             "Properties": {
                 "SandboxId": "RETAIL",
@@ -367,20 +367,51 @@ impl AuthClient {
             };
             return Err(Error::Auth(msg));
         }
-        Ok(XstsResp {
-            token: v["Token"]
-                .as_str()
-                .ok_or_else(|| Error::Auth("No XSTS token returned".into()))?
-                .to_string(),
-            uhs: v["DisplayClaims"]["xui"][0]["uhs"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-            xuid: v["DisplayClaims"]["xui"][0]["xid"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-        })
+        let token = v["Token"]
+            .as_str()
+            .ok_or_else(|| Error::Auth("No XSTS token returned".into()))?
+            .to_string();
+        let uhs = xbl_uhs.to_string();
+        let mut xuid = v["DisplayClaims"]["xui"][0]["xid"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        // Some Xbox accounts omit `xid` in DisplayClaims and even in the XSTS
+        // JWT; resolve it via the Xbox identity API as a last resort.
+        if xuid.is_empty() {
+            xuid = xid_from_jwt(&token);
+        }
+        if xuid.is_empty() {
+            xuid = match self.xuid_from_identity(&uhs, &token).await {
+                Ok(x) => x,
+                Err(_) => String::new()
+            };
+        }
+        Ok(XstsResp { token, uhs, xuid })
+    }
+
+    /// Resolve the numeric Xbox user id through the Xbox Live identity API.
+    /// Requires an XBL3.0 auth header (uhs + XSTS token).
+    async fn xuid_from_identity(&self, uhs: &str, token: &str) -> Result<String> {
+        let resp = self
+            .http
+            .get("https://xboxlive.com/identity/v2/account/xuid")
+            .header("Authorization", format!("XBL3.0 x={uhs};{token}"))
+            .header("x-xbl-contract-version", "2")
+            .send()
+            .await
+            .map_err(|e| Error::Auth(format!("xuid lookup failed: {e}")))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(Error::Auth(format!("xuid lookup HTTP {status}: {text}")));
+        }
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        let xuid = v["xuid"].as_str().unwrap_or("").to_string();
+        if xuid.is_empty() {
+            return Err(Error::Auth(format!("xuid lookup returned no xuid: {text}")));
+        }
+        Ok(xuid)
     }
 
     pub async fn mc_token(&self, xsts: &XstsResp) -> Result<MineToken> {
@@ -432,7 +463,7 @@ impl AuthClient {
     pub async fn complete_login(&self, ms: MsToken) -> Result<LoginResult> {
         let email = ms.id_token.as_deref().and_then(email_from_id_token);
         let mut ms_access = ms.access_token;
-        let (xbl, _) = match self.xbl_token(&ms_access).await {
+        let (xbl, xbl_uhs) = match self.xbl_token(&ms_access).await {
             Ok(v) => v,
             Err(first_err) => {
                 // Xbox sometimes rejects a just-issued token; retry once with
@@ -445,7 +476,7 @@ impl AuthClient {
                 self.xbl_token(&ms_access).await?
             }
         };
-        let xsts = self.xsts_token(&xbl).await?;
+        let xsts = self.xsts_token(&xbl, &xbl_uhs).await?;
         let mc = self.mc_token(&xsts).await?;
         let profile = self.mc_profile(&mc.access_token).await?;
         Ok(LoginResult {
@@ -466,23 +497,37 @@ impl AuthClient {
 /// Extract the `email` claim from a Microsoft id_token (unverified JWT —
 /// used purely as a convenience claim, the account identity stays the XUID).
 pub fn email_from_id_token(id_token: &str) -> Option<String> {
-    fn b64u(seg: &str) -> Option<Vec<u8>> {
-        use base64::Engine;
-        let padded = seg.replace('-', "+").replace('_', "/");
-        let mut s = padded;
-        while s.len() % 4 != 0 {
-            s.push('=');
-        }
-        base64::engine::general_purpose::STANDARD.decode(s).ok()
-    }
-    let payload = id_token.split('.').nth(1)?;
-    let bytes = b64u(payload)?;
-    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let claims = jwt_claims(id_token)?;
     let email = claims.get("email")?.as_str()?.trim();
     if email.is_empty() || !email.contains('@') {
         return None;
     }
     Some(email.to_lowercase())
+}
+
+/// Extract the `xid` (Xbox user id) claim from an XSTS token (JWT). Used as a
+/// fallback when the XSTS response body omits DisplayClaims.xid.
+pub fn xid_from_jwt(xsts_token: &str) -> String {
+    jwt_claims(xsts_token)
+        .and_then(|c| c.get("xid").and_then(|v| v.as_str()).map(String::from))
+        .unwrap_or_default()
+}
+
+/// Base64url-decode the payload segment of an (unverified) JWT.
+fn jwt_claims(id_token: &str) -> Option<serde_json::Value> {
+    let payload = id_token.split('.').nth(1)?;
+    let bytes = b64u(payload)?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn b64u(seg: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let padded = seg.replace('-', "+").replace('_', "/");
+    let mut s = padded;
+    while s.len() % 4 != 0 {
+        s.push('=');
+    }
+    base64::engine::general_purpose::STANDARD.decode(s).ok()
 }
 
 /// UUID form used by Mojang: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
@@ -500,6 +545,7 @@ pub fn dash_uuid(raw: &str) -> String {
 pub fn plain_uuid(raw: &str) -> String {
     raw.replace('-', "")
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

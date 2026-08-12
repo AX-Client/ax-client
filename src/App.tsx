@@ -311,6 +311,13 @@ export default function App() {
     const auto = async () => {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       try {
+        // register with the backend (name/email/online status) on start and
+        // periodically while the launcher runs
+        await api.premiumStatus();
+      } catch {
+        // ignore: offline backend or no account
+      }
+      try {
         await api.refreshAllAccounts();
       } catch {
         // ignore: accounts without a refresh token are skipped backend-side

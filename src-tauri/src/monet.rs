@@ -15,6 +15,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const PAYWALL_DEFAULT_URL: &str = "https://ax-client.com/premium";
 pub const AFFILIATE_DEFAULT_URL: &str = "https://bisecthosting.com/ax-client";
 
+/// Production backend: Supabase Edge Functions. Embedded as a default so the
+/// launcher works out of the box; `AX_BACKEND_URL` overrides it for dev.
+pub const DEFAULT_BACKEND_URL: &str = "https://vlouhawuhxldixyrjvib.supabase.co/functions/v1";
+
 /// Env keys - overridable via `.env` next to the working directory or the
 /// process environment.
 pub const ENV_BACKEND_URL: &str = "AX_BACKEND_URL";
@@ -30,7 +34,7 @@ pub const ENV_ENDPOINT_CLOUD: &str = "AX_ENDPOINT_CLOUD";
 
 pub fn backend_url() -> String {
     std::env::var(ENV_BACKEND_URL)
-        .unwrap_or_default()
+        .unwrap_or_else(|_| DEFAULT_BACKEND_URL.to_string())
         .trim_end_matches('/')
         .to_string()
 }
@@ -133,6 +137,47 @@ pub struct CloudSyncResult {
 
 const SESSION_KEY: &str = "session:{xuid}";
 const SESSION_REFRESH_KEY: &str = "session_refresh:{xuid}";
+
+/// Registers/updates the account with the backend and returns a fresh session
+/// token. Unlike `session_token` this always calls the backend (no cache), so
+/// the operator-visible fields (player name, email, online status) are kept in
+/// sync on every login.
+pub async fn identify_account(
+    state: &AppState,
+    xuid: &str,
+    player_name: Option<&str>,
+    email: Option<&str>,
+) -> Result<String> {
+    let base = backend_url();
+    if base.is_empty() {
+        return Err(Error::Auth("no backend configured (AX_BACKEND_URL)".into()));
+    }
+    let resp: serde_json::Value = state
+        .http
+        .post(format!("{base}{}", endpoint_identify()))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "xuid": xuid,
+            "mc_uuid": xuid,
+            "player_name": player_name.unwrap_or(""),
+            "email": email.unwrap_or(""),
+        }))
+        .send()
+        .await
+        .map_err(|e| Error::Auth(format!("identify failed: {e}")))?
+        .json()
+        .await
+        .map_err(|e| Error::Auth(format!("identify parse failed: {e}")))?;
+    let tok = resp["session_token"]
+        .as_str()
+        .ok_or_else(|| Error::Auth("backend returned no session token".into()))?;
+    let rt = resp["refresh_token"].as_str().unwrap_or(tok);
+    let mut vault = state.vault();
+    vault.set(&SESSION_KEY.replace("{xuid}", xuid), tok);
+    vault.set(&SESSION_REFRESH_KEY.replace("{xuid}", xuid), rt);
+    let _ = vault.flush();
+    Ok(tok.to_string())
+}
 
 /// Returns a valid session token for the user, creating/refreshing it through
 /// the backend when needed. Tokens are stored in the OS-keychain-backed vault.

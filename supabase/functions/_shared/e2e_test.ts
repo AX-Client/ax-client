@@ -3,7 +3,7 @@
 //   deno test --allow-net --allow-env supabase/functions/_shared/e2e_test.ts
 import { assert, assertEquals } from "jsr:@std/assert";
 
-type UsersRow = { xuid: string; tier: string; expires_at?: string; email?: string };
+type UsersRow = { xuid: string; tier: string; expires_at?: string; email?: string; mc_uuid?: string };
 
 type SessionRow = { token_hash: string; refresh_token_hash: string; xuid: string; expires_at: string };
 type CloudRow = { xuid: string; profile_key: string; payload: unknown; rev: number };
@@ -80,8 +80,8 @@ const mockInner = async (req: Request): Promise<Response> => {
   }
   if (req.method === "PATCH") {
     if (table === "ax_users") {
-      const x = qs["xuid"]?.replace("eq.", "");
-      const u = users.find((row) => row.xuid === x);
+      const x = qs["xuid"]?.replace("eq.", "") ?? qs["mc_uuid"]?.replace("eq.", "");
+      const u = users.find((row) => row.xuid === x || row.mc_uuid === x);
       if (u) Object.assign(u, body);
       return new Response(null, { status: 204 });
     }
@@ -123,7 +123,7 @@ Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () =>
     // 1. identify
     const idRes = await call(identify, new Request("http://x/auth-identify", {
       method: "POST",
-      body: JSON.stringify({ xuid: "2535461012345678" }),
+      body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046" }),
     }));
     assertEquals(idRes.status, 200);
     const idBody = await idRes.json();
@@ -138,8 +138,8 @@ Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () =>
     assertEquals((await freeRes.json()).tier, "free");
 
     // 3. operator sets premium (simulated webhook)
-    users.find((u) => u.xuid === "2535461012345678")!.tier = "premium";
-    users.find((u) => u.xuid === "2535461012345678")!.expires_at = new Date(Date.now() + 3600_000).toISOString();
+    users.find((u) => u.xuid === "9e2601d1b5a040ec9fc5ef164f3c6046")!.tier = "premium";
+    users.find((u) => u.xuid === "9e2601d1b5a040ec9fc5ef164f3c6046")!.expires_at = new Date(Date.now() + 3600_000).toISOString();
     const premRes = await call(premiumStatus, new Request("http://x/premium-status", {
       headers: { Authorization: `Bearer ${idBody.session_token}` },
     }));
@@ -148,7 +148,7 @@ Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () =>
     // 4. refresh rotates the session
     const refRes = await call(refresh, new Request("http://x/auth-refresh", {
       method: "POST",
-      body: JSON.stringify({ xuid: "2535461012345678", refresh_token: idBody.refresh_token }),
+      body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046", refresh_token: idBody.refresh_token }),
     }));
     assertEquals(refRes.status, 200);
     const refBody = await refRes.json();
@@ -165,7 +165,7 @@ Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () =>
     const syncRes = await call(cloudSync, new Request("http://x/cloud-sync", {
       method: "POST",
       headers: { Authorization: `Bearer ${refBody.session_token}` },
-      body: JSON.stringify({ xuid: "2535461012345678", rev: 100, options: opts }),
+      body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046", rev: 100, options: opts }),
     }));
     assertEquals(syncRes.status, 200);
     assertEquals((await syncRes.json()).uploaded, 2);
@@ -174,7 +174,7 @@ Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () =>
     const staleRes = await call(cloudSync, new Request("http://x/cloud-sync", {
       method: "POST",
       headers: { Authorization: `Bearer ${refBody.session_token}` },
-      body: JSON.stringify({ xuid: "2535461012345678", rev: 50, options: { renderDistance: "2" } }),
+      body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046", rev: 50, options: { renderDistance: "2" } }),
     }));
     assertEquals((await staleRes.json()).uploaded, 0);
 
@@ -182,7 +182,7 @@ Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () =>
     const badRes = await call(cloudSync, new Request("http://x/cloud-sync", {
       method: "POST",
       headers: { Authorization: "Bearer deadbeef" },
-      body: JSON.stringify({ xuid: "2535461012345678", rev: 1, options: {} }),
+      body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046", rev: 1, options: {} }),
     }));
     assertEquals(badRes.status, 401);
   } finally {
@@ -210,7 +210,7 @@ Deno.test("admin: stats, grant, news + rss", async () => {
     // identify a user with a name (fresh session -> online)
     const idRes = await call(identify, new Request("http://x/auth-identify", {
       method: "POST",
-      body: JSON.stringify({ xuid: "2535461012345678", player_name: "Felix", email: "Felix@Example.com" }),
+      body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046", player_name: "Felix", email: "Felix@Example.com" }),
     }));
     const idBody = await idRes.json();
 
@@ -235,7 +235,7 @@ Deno.test("admin: stats, grant, news + rss", async () => {
     const grant = await call(adminGrant, new Request("http://x/admin-grant", {
       method: "POST",
       headers: { Authorization: `Bearer ${ADMIN}` },
-      body: JSON.stringify({ xuid: "2535461012345678", tier: "premium", days: 30 }),
+      body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046", tier: "premium", days: 30 }),
     }));
     assertEquals(grant.status, 200);
 
@@ -253,7 +253,7 @@ Deno.test("admin: stats, grant, news + rss", async () => {
     }));
     assertEquals(grantByEmail.status, 200);
     const grantBody = await grantByEmail.json();
-    assertEquals(grantBody.xuid, "2535461012345678");
+    assertEquals(grantBody.xuid, "9e2601d1b5a040ec9fc5ef164f3c6046");
 
     // unknown email -> 404
     const grantMiss = await call(adminGrant, new Request("http://x/admin-grant", {

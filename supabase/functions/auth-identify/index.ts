@@ -1,5 +1,7 @@
-// POST /auth-identify  body: { xuid }
+// POST /auth-identify  body: { mc_uuid, player_name?, email? }
 // Creates the user (free tier on first sight) and issues a session token.
+// Account identity is the Minecraft UUID (mc_uuid); the legacy `xuid` column
+// mirrors it so sessions/cloud rows keep working unchanged.
 // Response: { session_token, refresh_token, expires_at } (unix seconds)
 import { json, rest, sha256hex, randomToken, unixNow, isoNow, SESSION_TTL_SEC } from "../_shared/helpers.ts";
 
@@ -9,24 +11,25 @@ export const handler = async (req: Request): Promise<Response> => {
   }
   if (req.method !== "POST") return json(405, { error: "method not allowed" });
 
-  let xuid: string;
+  let mcUuid: string;
   let playerName = "";
   let email = "";
   try {
     const b = await req.json();
-    xuid = String(b.xuid ?? "").trim();
+    mcUuid = String(b.mc_uuid ?? b.xuid ?? "").trim().toLowerCase();
     playerName = String(b.player_name ?? "").trim().slice(0, 32);
     email = String(b.email ?? "").trim().toLowerCase().slice(0, 254);
   } catch {
     return json(400, { error: "invalid body" });
   }
-  if (!xuid || xuid.length > 64) return json(400, { error: "invalid xuid" });
+  if (!mcUuid || !/^[0-9a-f]{32}$/.test(mcUuid)) return json(400, { error: "invalid mc_uuid" });
 
   // ensure the user row exists (tier stays as set by the operator)
-  const user = await rest("GET", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}&select=xuid`);
+  const user = await rest("GET", `/ax_users?mc_uuid=eq.${encodeURIComponent(mcUuid)}&select=mc_uuid`);
   if (!Array.isArray(user.data) || user.data.length === 0) {
     await rest("POST", "/ax_users", {
-      xuid,
+      xuid: mcUuid,
+      mc_uuid: mcUuid,
       tier: "free",
       player_name: playerName || null,
       email: email || null,
@@ -35,7 +38,7 @@ export const handler = async (req: Request): Promise<Response> => {
     const patch: Record<string, unknown> = { last_seen: new Date().toISOString() };
     if (playerName) patch.player_name = playerName;
     if (email) patch.email = email;
-    await rest("PATCH", `/ax_users?xuid=eq.${encodeURIComponent(xuid)}`, patch);
+    await rest("PATCH", `/ax_users?mc_uuid=eq.${encodeURIComponent(mcUuid)}`, patch);
   }
 
   const sessionToken = randomToken();
@@ -44,7 +47,7 @@ export const handler = async (req: Request): Promise<Response> => {
   await rest("POST", "/ax_sessions", {
     token_hash: await sha256hex(sessionToken),
     refresh_token_hash: await sha256hex(refreshToken),
-    xuid,
+    xuid: mcUuid,
     expires_at: expiresAt,
   });
 

@@ -138,6 +138,8 @@ export const api = {
   monetConfig: () => cmd<MonetConfig>("monet_config"),
   cloudSync: () => cmd<CloudSyncResult>("cloud_profiles_sync"),
   cloudRestore: () => cmd<CloudRestoreResult>("cloud_profiles_restore"),
+  worldTransferUpload: (backup: string) => cmd<number>("world_transfer_upload", { backup }),
+  worldTransferPoll: () => cmd<string[]>("world_transfer_poll"),
 
   // Utility callbacks the renderer uses for non-invoke work.
   async serverStatus(_ip: string): Promise<import("./types").ServerStatus> {

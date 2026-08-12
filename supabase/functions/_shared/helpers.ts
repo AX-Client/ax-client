@@ -57,6 +57,23 @@ export function isoNow(offsetSec: number): string {
 export const SESSION_TTL_SEC = 900; // 15 min
 export const REFRESH_TTL_SEC = 30 * 24 * 3600; // 30 days
 
+/// Resolves the xuid behind a session-token Authorization header, or null.
+export async function sessionUser(req: Request): Promise<string | null> {
+  const auth = req.headers.get("authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token) return null;
+  const tokenHash = await sha256hex(token);
+  const row = await rest(
+    "GET",
+    `/ax_sessions?select=xuid,expires_at&token_hash=eq.${encodeURIComponent(tokenHash)}`,
+  );
+  const match = Array.isArray(row.data) && row.data.length > 0 ? row.data[0] : null;
+  if (!match) return null;
+  const expiresAt = Date.parse(match.expires_at);
+  if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) return null;
+  return String(match.xuid);
+}
+
 /// Verifies the Authorization header against the admin secret configured via
 /// `supabase secrets set AX_ADMIN_SECRET=...`. The secret never leaves the
 /// Edge Function environment.
@@ -64,4 +81,31 @@ export function adminOk(req: Request): boolean {
   const secret = Deno.env.get("AX_ADMIN_SECRET") ?? "";
   if (!secret) return false;
   return (req.headers.get("authorization") ?? "") === `Bearer ${secret}`;
+}
+
+/// Calls the Supabase Storage API (service role). Used for world transfers.
+export async function storage(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; data: unknown }> {
+  const url = Deno.env.get("SUPABASE_URL") ?? "";
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  const res = await fetch(`${url}/storage/v1${path}`, {
+    method,
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+  return { status: res.status, data };
 }

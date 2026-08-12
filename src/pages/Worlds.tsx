@@ -19,7 +19,9 @@ import { launchTimeout } from "../lib/install";
 import { api, fmtBytes, toast, timeAgo } from "../lib/api";
 import type { CrashReportInfo, ScreenshotInfo, ServerEntry, WorldInfo } from "../lib/types";
 import { Badge, Button, Card, EmptyState, Field, Modal, RefreshButton, SelectInput, SpinnerBlock, TextInput, Toggle, cx } from "../components/ui";
+import PaywallModal from "../components/PaywallModal";
 import { useT } from "../lib/i18n";
+import { CloudUpload } from "lucide-react";
 
 type Tab = "worlds" | "screenshots" | "crashes" | "servers";
 
@@ -38,6 +40,8 @@ export default function WorldsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [backups, setBackups] = useState<string[]>([]);
   const [backupFolder, setBackupFolder] = useState<string | null>(null);
+  const [transferring, setTransferring] = useState<string | null>(null);
+  const [paywall, setPaywall] = useState(false);
   const [crashView, setCrashView] = useState<CrashReportInfo | null>(null);
   const [serverEdit, setServerEdit] = useState<ServerEntry | null>(null);
   const [serverDraft, setServerDraft] = useState<{ name: string; ip: string; acceptTextures: boolean }>({
@@ -87,6 +91,24 @@ export default function WorldsPage() {
       setBackups(await api.listWorldBackups(w.folder));
     } catch (e) {
       toast(String(e));
+    }
+  };
+
+  const transferCloud = async (b: string) => {
+    setTransferring(b);
+    try {
+      const st = await api.premiumStatus();
+      if (st.tier !== "premium") {
+        setPaywall(true);
+        return;
+      }
+      await api.worldTransferUpload(b);
+      toast(t("worlds.transferSent"));
+    } catch (e) {
+      const msg = String(e);
+      toast(msg.includes("world_transfer_active") ? t("worlds.transferActive") : msg);
+    } finally {
+      setTransferring(null);
     }
   };
 
@@ -403,14 +425,20 @@ export default function WorldsPage() {
             {backups.map((b) => (
               <div key={b} className="flex items-center justify-between gap-3">
                 <span className="text-[13px] text-white/80 truncate">{b}</span>
-                <Button size="sm" onClick={() => restore(b)}>
-                  <RotateCcw className="w-3.5 h-3.5" /> {t("worlds.restore")}
-                </Button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button size="sm" loading={transferring === b} onClick={() => transferCloud(b)}>
+                    <CloudUpload className="w-3.5 h-3.5" /> {t("worlds.transferCloud")}
+                  </Button>
+                  <Button size="sm" onClick={() => restore(b)}>
+                    <RotateCcw className="w-3.5 h-3.5" /> {t("worlds.restore")}
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
         )}
       </Modal>
+      {paywall && <PaywallModal onClose={() => setPaywall(false)} />}
       <Modal open={!!serverEdit} onClose={() => setServerEdit(null)} title={serverEdit ? t("worlds.editServer") : t("worlds.addServer")}>
         <div className="space-y-4">
           <Field label={t("worlds.serverName")}>

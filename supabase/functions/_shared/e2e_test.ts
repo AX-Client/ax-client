@@ -8,11 +8,18 @@ type UsersRow = { xuid: string; tier: string; expires_at?: string; email?: strin
 type SessionRow = { token_hash: string; refresh_token_hash: string; xuid: string; expires_at: string };
 type CloudRow = { xuid: string; profile_key: string; payload: unknown; rev: number };
 type NewsRow = { id: string; title: string; body: string; link: string; created_at: string };
+type TransferRow = {
+  id: string; xuid: string; name: string; size: number; status: string;
+  object_key: string; expires_at: string; device_ids: string[];
+};
 
 const users: UsersRow[] = [];
 const sessions: SessionRow[] = [];
 const cloud: CloudRow[] = [];
 const news: NewsRow[] = [];
+const transfers: TransferRow[] = [];
+const storageObjects = new Set<string>();
+let mockPort = 0;
 
 const parseQs = (search: string): Record<string, string> => {
   const out: Record<string, string> = {};
@@ -24,8 +31,37 @@ const filterEq = <T extends Record<string, unknown>>(rows: T[], qs: Record<strin
   rows.filter((r) => {
     for (const [k, v] of Object.entries(qs)) {
       if (k.startsWith("select")) continue;
-      if (!v.startsWith("eq.")) continue;
       const key = k.replace(/^[a-z_]+\./, "");
+      if (v.startsWith("cs.")) {
+        const arr = r[key];
+        const want = JSON.parse(v.slice(3));
+        if (!Array.isArray(arr) || !arr.includes(want)) return false;
+        continue;
+      }
+      if (v.startsWith("not.cs.")) {
+        const arr = r[key];
+        const want = JSON.parse(v.slice(7));
+        if (Array.isArray(arr) && arr.includes(want)) return false;
+        continue;
+      }
+      if (v.startsWith("gt.") || v.startsWith("lt.")) {
+        const op = v.slice(0, 3);
+        const want = Date.parse(v.slice(3));
+        const got = Date.parse(String(r[key] ?? ""));
+        if (Number.isNaN(want) || Number.isNaN(got)) continue;
+        if (op === "gt." && !(got > want)) return false;
+        if (op === "lt." && !(got < want)) return false;
+        continue;
+      }
+      if (v.startsWith("in.")) {
+        const inner = v.slice(3);
+        const vals = inner.startsWith("[")
+          ? JSON.parse(inner)
+          : inner.slice(1, -1).split(",").map((s) => s.trim().replace(/^"|"$/g, ""));
+        if (!vals.includes(String(r[key] ?? ""))) return false;
+        continue;
+      }
+      if (!v.startsWith("eq.")) continue;
       const rv = key in r ? r[key] : (r as Record<string, unknown>).xuid;
       if (String(rv ?? "") !== v.slice(3)) return false;
     }
@@ -44,13 +80,38 @@ const mockSupabase = async (req: Request): Promise<Response> => {
 const mockInner = async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const qs = parseQs(url.search);
-  const table = url.pathname.replace("/rest/v1/", "").split("?")[0];
+  const path = url.pathname;
+  const table = path.replace("/rest/v1/", "").split("?")[0];
+
+  // storage API (world transfers)
+  const upSign = path.match(/^\/storage\/v1\/object\/upload\/sign\/world-transfer\/(.+)$/);
+  if (upSign) {
+    return json200({ signedUrl: `http://127.0.0.1:${mockPort}/fake-upload/${upSign[1]}`, token: "mock-token" });
+  }
+  const dlSign = path.match(/^\/storage\/v1\/object\/sign\/world-transfer\/(.+)$/);
+  if (dlSign) {
+    return json200({ signedUrl: `http://127.0.0.1:${mockPort}/fake-download/${dlSign[1]}` });
+  }
+  const objDel = path.match(/^\/storage\/v1\/object\/world-transfer\/(.+)$/);
+  if (objDel && req.method === "DELETE") {
+    storageObjects.delete(objDel[1]);
+    return json200({ message: "ok" });
+  }
+  if (path.startsWith("/fake-upload/") && req.method === "PUT") {
+    storageObjects.add(path.slice("/fake-upload/".length));
+    return new Response(JSON.stringify({ Key: path }), { status: 200 });
+  }
+  if (path.startsWith("/fake-download/") && req.method === "GET") {
+    return new Response("FAKE-ZIP", { status: 200, headers: { "content-type": "application/octet-stream" } });
+  }
+
   const body = req.method === "POST" || req.method === "PATCH" ? await req.json() : null;
 
   if (req.method === "GET") {
     if (table === "ax_users") return json200(filterEq(users as unknown as Record<string, unknown>[], qs));
     if (table === "ax_sessions") return json200(filterEq(sessions as unknown as Record<string, unknown>[], qs));
     if (table === "ax_cloud_profiles") return json200(filterEq(cloud as unknown as Record<string, unknown>[], qs));
+    if (table === "ax_world_transfers") return json200(filterEq(transfers as unknown as Record<string, unknown>[], qs));
     if (table === "ax_news") {
       const rows = [...news].sort((a, b) => b.created_at.localeCompare(a.created_at));
       return json200(rows);
@@ -73,6 +134,11 @@ const mockInner = async (req: Request): Promise<Response> => {
       else cloud.push(body);
       return new Response("", { status: 201 });
     }
+    if (table === "ax_world_transfers") {
+      const row: TransferRow = { id: crypto.randomUUID(), device_ids: [], ...body };
+      transfers.push(row);
+      return json200([{ id: row.id }]);
+    }
     if (table === "ax_news") {
       news.push({ id: crypto.randomUUID(), ...body, created_at: new Date().toISOString() });
       return new Response("", { status: 201 });
@@ -85,12 +151,24 @@ const mockInner = async (req: Request): Promise<Response> => {
       if (u) Object.assign(u, body);
       return new Response(null, { status: 204 });
     }
+    if (table === "ax_world_transfers") {
+      const id = qs["id"]?.replace("eq.", "");
+      const t = transfers.find((row) => row.id === id);
+      if (t) Object.assign(t, body);
+      return new Response(null, { status: 204 });
+    }
   }
   if (req.method === "DELETE") {
     if (table === "ax_sessions") {
       const h = qs["token_hash"]?.replace("eq.", "");
       const i = sessions.findIndex((s) => s.token_hash === h);
       if (i >= 0) sessions.splice(i, 1);
+      return new Response(null, { status: 204 });
+    }
+    if (table === "ax_world_transfers") {
+      const id = qs["id"]?.replace("eq.", "");
+      const i = transfers.findIndex((t) => t.id === id);
+      if (i >= 0) transfers.splice(i, 1);
       return new Response(null, { status: 204 });
     }
     if (table === "ax_news") {
@@ -111,14 +189,20 @@ const { handler: refresh } = await import("../auth-refresh/index.ts");
 const { handler: premiumStatus } = await import("../premium-status/index.ts");
 const { handler: cloudSync } = await import("../cloud-sync/index.ts");
 const { handler: cloudRestore } = await import("../cloud-restore/index.ts");
+const { handler: worldTransfer } = await import("../world-transfer/index.ts");
 
 const call = (handler: (req: Request) => Promise<Response>, req: Request): Promise<Response> => handler(req);
 
-Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () => {
+const boot = async () => {
   const server = Deno.serve({ port: 0, onListen: () => {} }, mockSupabase);
-  const port = server.addr.port;
-  Deno.env.set("SUPABASE_URL", `http://127.0.0.1:${port}`);
+  mockPort = server.addr.port;
+  Deno.env.set("SUPABASE_URL", `http://127.0.0.1:${mockPort}`);
   Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+  return server;
+};
+
+Deno.test("auth chain: identify -> status -> refresh -> cloud-sync", async () => {
+  const server = await boot();
 
   try {
     // 1. identify
@@ -210,10 +294,7 @@ const { handler: newsRss } = await import("../news-rss/index.ts");
 const ADMIN = "supersecret";
 
 Deno.test("admin: stats, grant, news + rss", async () => {
-  const server = Deno.serve({ port: 0, onListen: () => {} }, mockSupabase);
-  const port = server.addr.port;
-  Deno.env.set("SUPABASE_URL", `http://127.0.0.1:${port}`);
-  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-key");
+  const server = await boot();
   Deno.env.set("AX_ADMIN_SECRET", ADMIN);
 
   try {
@@ -333,5 +414,90 @@ Deno.test("admin: stats, grant, news + rss", async () => {
     Deno.env.delete("SUPABASE_URL");
     Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
     Deno.env.delete("AX_ADMIN_SECRET");
+  }
+});
+
+Deno.test("world transfer: create -> upload -> confirm -> poll -> download -> ack", async () => {
+  const server = await boot();
+
+  try {
+    // identify -> session (reuse the xuid pattern)
+    const idRes = await call(identify, new Request("http://x/auth-identify", {
+      method: "POST",
+      body: JSON.stringify({ xuid: "9e2601d1b5a040ec9fc5ef164f3c6046" }),
+    }));
+    const idBody = await idRes.json();
+    const auth = { Authorization: `Bearer ${idBody.session_token}` };
+
+    // create transfer (uploader side)
+    const create = await call(worldTransfer, new Request("http://x/world-transfer", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "create", name: "Survival-20260812-1200.zip", size: 1024 }),
+    }));
+    assertEquals(create.status, 200);
+    const created = await create.json();
+    assert(created.upload_url.includes("/fake-upload/"), "signed upload url issued");
+
+    // a second create while active -> 409
+    const dup = await call(worldTransfer, new Request("http://x/world-transfer", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "create", name: "other.zip", size: 10 }),
+    }));
+    assertEquals(dup.status, 409);
+
+    // upload via signed url (direct client PUT)
+    const put = await fetch(created.upload_url, { method: "PUT", body: new Uint8Array(1024) });
+    assertEquals(put.status, 200);
+
+    // confirm
+    const conf = await call(worldTransfer, new Request("http://x/world-transfer", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "confirm", id: created.id }),
+    }));
+    assertEquals(conf.status, 200);
+
+    // poll on another device -> transfer visible with signed download url
+    const pollRes = await call(
+      worldTransfer,
+      new Request(`http://x/world-transfer?action=poll&device_id=device-b`, { headers: auth }),
+    );
+    assertEquals(pollRes.status, 200);
+    const pollBody = await pollRes.json();
+    assertEquals(pollBody.transfers.length, 1);
+    assertEquals(pollBody.transfers[0].name, "Survival-20260812-1200.zip");
+    const dlUrl = pollBody.transfers[0].download_url;
+    assert(dlUrl.includes("/fake-download/"), "signed download url issued");
+
+    // download + ack (device-b received it)
+    const dl = await fetch(dlUrl);
+    assertEquals(await dl.text(), "FAKE-ZIP");
+
+    const ack = await call(worldTransfer, new Request("http://x/world-transfer", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "ack", id: created.id, device_id: "device-b" }),
+    }));
+    assertEquals(ack.status, 200);
+
+    // device-b polls again -> nothing left for it
+    const poll2 = await call(
+      worldTransfer,
+      new Request(`http://x/world-transfer?action=poll&device_id=device-b`, { headers: auth }),
+    );
+    assertEquals((await poll2.json()).transfers.length, 0);
+
+    // another device (c) still sees it
+    const poll3 = await call(
+      worldTransfer,
+      new Request(`http://x/world-transfer?action=poll&device_id=device-c`, { headers: auth }),
+    );
+    assertEquals((await poll3.json()).transfers.length, 1);
+  } finally {
+    await server.shutdown();
+    Deno.env.delete("SUPABASE_URL");
+    Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
   }
 });

@@ -32,6 +32,7 @@ pub const ENV_ENDPOINT_REFRESH: &str = "AX_ENDPOINT_REFRESH";
 pub const ENV_ENDPOINT_STATUS: &str = "AX_ENDPOINT_STATUS";
 pub const ENV_ENDPOINT_CLOUD: &str = "AX_ENDPOINT_CLOUD";
 pub const ENV_ENDPOINT_CLOUD_RESTORE: &str = "AX_ENDPOINT_CLOUD_RESTORE";
+pub const ENV_ENDPOINT_TRANSFER: &str = "AX_ENDPOINT_TRANSFER";
 
 pub fn backend_url() -> String {
     std::env::var(ENV_BACKEND_URL)
@@ -61,6 +62,9 @@ fn endpoint_cloud() -> String {
 }
 fn endpoint_cloud_restore() -> String {
     endpoint(ENV_ENDPOINT_CLOUD_RESTORE, "/cloud-restore")
+}
+fn endpoint_transfer() -> String {
+    endpoint(ENV_ENDPOINT_TRANSFER, "/world-transfer")
 }
 
 pub fn paywall_url() -> String {
@@ -147,6 +151,19 @@ pub struct CloudRestoreResult {
     pub rev: i64,
     pub options: Option<serde_json::Value>,
 }
+
+/// A world backup offered for short-term download to the user's other devices.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WorldTransfer {
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    pub download_url: String,
+}
+
+pub const MAX_TRANSFER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+pub const TRANSFER_TTL_HINT: &str = "30"; // minutes, shown in the UI
 
 const SESSION_KEY: &str = "session:{xuid}";
 const SESSION_REFRESH_KEY: &str = "session_refresh:{xuid}";
@@ -399,6 +416,148 @@ pub async fn cloud_restore(
         rev: body["rev"].as_i64().unwrap_or(0),
         options: Some(body["options"].clone()),
     })
+}
+
+/// Start a short-lived world backup transfer: the caller uploads the zip to
+/// the returned signed URL, then calls `world_transfer_confirm`. Returns
+/// (transfer id, upload url).
+pub async fn world_transfer_create(
+    state: &AppState,
+    xuid: &str,
+    name: &str,
+    size: u64,
+) -> Result<(String, String)> {
+    if premium_mock() {
+        return Err(Error::Auth("world transfer disabled in mock mode".into()));
+    }
+    if size == 0 || size > MAX_TRANSFER_BYTES {
+        return Err(Error::Auth("backup too large (max 2 GB)".into()));
+    }
+    let base = backend_url();
+    let tok = session_token(state, xuid, None, None).await?;
+    let resp = state
+        .http
+        .post(format!("{base}{}", endpoint_transfer()))
+        .header("Content-Type", "application/json")
+        .bearer_auth(&tok)
+        .json(&serde_json::json!({ "action": "create", "name": name, "size": size }))
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| Error::Auth(format!("world transfer create failed: {e}")))?;
+    if resp.status() == 409 {
+        return Err(Error::Auth("world_transfer_active".into()));
+    }
+    if !resp.status().is_success() {
+        return Err(Error::Auth(format!(
+            "world transfer create rejected (HTTP {})",
+            resp.status().as_u16()
+        )));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Auth(format!("world transfer create parse failed: {e}")))?;
+    let id = body["id"].as_str().unwrap_or("").to_string();
+    let url = body["upload_url"].as_str().unwrap_or("").to_string();
+    if id.is_empty() || url.is_empty() {
+        return Err(Error::Auth("world transfer create: missing id/upload_url".into()));
+    }
+    Ok((id, url))
+}
+
+/// Mark a created transfer as ready so the user's other devices can fetch it.
+pub async fn world_transfer_confirm(state: &AppState, xuid: &str, id: &str) -> Result<()> {
+    if premium_mock() {
+        return Err(Error::Auth("world transfer disabled in mock mode".into()));
+    }
+    let base = backend_url();
+    let tok = session_token(state, xuid, None, None).await?;
+    let resp = state
+        .http
+        .post(format!("{base}{}", endpoint_transfer()))
+        .header("Content-Type", "application/json")
+        .bearer_auth(&tok)
+        .json(&serde_json::json!({ "action": "confirm", "id": id }))
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| Error::Auth(format!("world transfer confirm failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(Error::Auth(format!(
+            "world transfer confirm rejected (HTTP {})",
+            resp.status().as_u16()
+        )));
+    }
+    Ok(())
+}
+
+/// List world backups currently offered to this account (excluding those
+/// already received on this device).
+pub async fn world_transfer_poll(
+    state: &AppState,
+    xuid: &str,
+    device_id: &str,
+) -> Result<Vec<WorldTransfer>> {
+    if premium_mock() {
+        return Ok(Vec::new());
+    }
+    let base = backend_url();
+    let tok = session_token(state, xuid, None, None).await?;
+    let resp = state
+        .http
+        .get(format!(
+            "{base}{}?action=poll&device_id={device_id}",
+            endpoint_transfer(),
+        ))
+        .bearer_auth(&tok)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| Error::Auth(format!("world transfer poll failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(Error::Auth(format!(
+            "world transfer poll rejected (HTTP {})",
+            resp.status().as_u16()
+        )));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Auth(format!("world transfer poll parse failed: {e}")))?;
+    let list = body["transfers"].as_array().cloned().unwrap_or_default();
+    Ok(list
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<WorldTransfer>(v).ok())
+        .collect())
+}
+
+/// Tell the backend this device received the backup so it won't be offered
+/// here again (other devices of the account can still fetch it until the
+/// 30-minute window expires).
+pub async fn world_transfer_ack(state: &AppState, xuid: &str, id: &str, device_id: &str) -> Result<()> {
+    if premium_mock() {
+        return Ok(());
+    }
+    let base = backend_url();
+    let tok = session_token(state, xuid, None, None).await?;
+    let resp = state
+        .http
+        .post(format!("{base}{}", endpoint_transfer()))
+        .header("Content-Type", "application/json")
+        .bearer_auth(&tok)
+        .json(&serde_json::json!({ "action": "ack", "id": id, "device_id": device_id }))
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| Error::Auth(format!("world transfer ack failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(Error::Auth(format!(
+            "world transfer ack rejected (HTTP {})",
+            resp.status().as_u16()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

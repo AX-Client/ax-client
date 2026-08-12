@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
 import { useApp } from "./lib/store";
-import { api } from "./lib/api";
+import { api, toast } from "./lib/api";
 import { applyAppearance } from "./lib/appearance";
 import { useT } from "./lib/i18n";
 import type { GameStatus, InstallProgress } from "./lib/types";
@@ -322,6 +322,12 @@ export default function App() {
       } catch {
         // ignore: accounts without a refresh token are skipped backend-side
       }
+      try {
+        const received = await api.worldTransferPoll();
+        for (const name of received) toast(t("worlds.transferReceived", { name }));
+      } catch {
+        // ignore: transfer polling is opportunistic
+      }
       const app = useApp.getState();
       await app.refreshAccounts();
       await app.refreshProfiles();
@@ -331,11 +337,11 @@ export default function App() {
       if (document.visibilityState === "visible") void auto();
     };
     document.addEventListener("visibilitychange", onVisible);
-    const t = setTimeout(auto, 8000);
+    const bootTimer = setTimeout(auto, 8000);
     const iv = setInterval(auto, 120000);
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
-      clearTimeout(t);
+      clearTimeout(bootTimer);
       clearInterval(iv);
     };
   }, [booted, refreshProfiles]);

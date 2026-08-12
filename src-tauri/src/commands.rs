@@ -1595,6 +1595,148 @@ pub async fn cloud_profiles_restore(state: State<'_, AppState>) -> CmdResult<cra
         .map_err(|e| e.to_string())
 }
 
+/// Stable per-install id used to de-duplicate world transfers on the backend.
+fn device_id(state: &AppState) -> String {
+    let file = state.data_dir.join("device_id");
+    if let Ok(id) = std::fs::read_to_string(&file) {
+        let id = id.trim();
+        if id.len() >= 16 {
+            return id.to_string();
+        }
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let rand = u64::from_be_bytes([
+        std::process::id().to_le_bytes()[0],
+        0,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos().to_le_bytes()[0])
+            .unwrap_or(0),
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]);
+    let id = format!("{nanos:x}-{rand:x}");
+    let _ = std::fs::write(&file, &id);
+    id
+}
+
+/// Upload a local world backup to the short-lived cloud transfer so the
+/// user's other devices can fetch it (30 min window). Premium-gated.
+#[tauri::command]
+pub async fn world_transfer_upload(
+    state: State<'_, AppState>,
+    backup: String,
+) -> CmdResult<u64> {
+    let account = active_account(&state).ok_or_else(|| String::from("no_account"))?;
+    let xuid = active_xuid(&state).ok_or_else(|| String::from("no_xuid"))?;
+    let name = Some(account.player_name.clone());
+    let email = account.email.clone();
+    let status = crate::monet::premium_status(&state, &xuid, name.as_deref(), email.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    if !status.is_premium() {
+        return Err(String::from("premium_required"));
+    }
+
+    let path = state.data_dir.join("backups").join(&backup);
+    let meta = std::fs::metadata(&path).map_err(|e| format!("backup not found: {e}"))?;
+    let size = meta.len();
+    if size == 0 {
+        return Err(String::from("backup_empty"));
+    }
+    if size > crate::monet::MAX_TRANSFER_BYTES {
+        return Err(String::from("backup_too_large"));
+    }
+
+    let (id, upload_url) = crate::monet::world_transfer_create(&state, &xuid, &backup, size)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let bytes = std::fs::read(&path).map_err(|e| format!("backup read failed: {e}"))?;
+    let up = state
+        .http
+        .put(upload_url)
+        .header("Content-Type", "application/zip")
+        .body(bytes)
+        .timeout(std::time::Duration::from_secs(600))
+        .send()
+        .await
+        .map_err(|e| format!("upload failed: {e}"))?;
+    if !up.status().is_success() {
+        return Err(format!("upload rejected (HTTP {})", up.status().as_u16()));
+    }
+
+    crate::monet::world_transfer_confirm(&state, &xuid, &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(size)
+}
+
+/// Poll for world backups waiting for this device and store them into the
+/// local backups folder so the user can restore them in the Worlds tab.
+/// Returns the names of received backups.
+#[tauri::command]
+pub async fn world_transfer_poll(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
+    let account = match active_account(&state) {
+        Some(a) => a,
+        None => return Ok(Vec::new()),
+    };
+    let xuid = match active_xuid(&state) {
+        Some(x) => x,
+        None => return Ok(Vec::new()),
+    };
+    let name = Some(account.player_name.clone());
+    let email = account.email.clone();
+    let status = match crate::monet::premium_status(&state, &xuid, name.as_deref(), email.as_deref())
+        .await
+    {
+        Ok(s) => s,
+        Err(_) => return Ok(Vec::new()),
+    };
+    if !status.is_premium() {
+        return Ok(Vec::new());
+    }
+
+    let did = device_id(&state);
+    let transfers = match crate::monet::world_transfer_poll(&state, &xuid, &did).await {
+        Ok(t) => t,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let dir = state.data_dir.join("backups");
+    let _ = std::fs::create_dir_all(&dir);
+    let mut received = Vec::new();
+    for t in transfers {
+        let target = dir.join(&t.name);
+                let ok = {
+            let resp = state
+                .http
+                .get(&t.download_url)
+                .timeout(std::time::Duration::from_secs(600))
+                .send()
+                .await;
+            match resp {
+                Ok(r) => match r.bytes().await {
+                    Ok(b) => std::fs::write(&target, &b).is_ok(),
+                    Err(_) => false,
+                },
+                Err(_) => false,
+            }
+        };
+        if ok {
+            let _ = crate::monet::world_transfer_ack(&state, &xuid, &t.id, &did).await;
+            received.push(t.name);
+        }
+    }
+    Ok(received)
+}
+
 /// Open a URL in the OS default browser (required so affiliate/cookie
 /// tracking works - never an in-app webview).
 #[tauri::command]
